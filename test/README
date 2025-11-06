@@ -1,0 +1,52 @@
+
+This directory is intended for PlatformIO Test Runner and project tests.
+
+Unit Testing is a software testing method by which individual units of
+source code, sets of one or more MCU program modules together with associated
+control data, usage procedures, and operating procedures, are tested to
+determine whether they are fit for use. Unit testing finds problems early
+in the development cycle.
+
+More information about PlatformIO Unit Testing:
+- https://docs.platformio.org/en/latest/advanced/unit-testing/index.html
+
+
+// Jika format input frontend adalah 'YYYY-MM-DDTHH:mm' (tanpa detik & offset),
+    // new Date mungkin membuat waktu dalam zona waktu lokal (misalnya WIB/UTC+7).
+    // Untuk konsistensi, kita bisa konversi ke UTC atau ke awal/hari akhir WITA.
+    // Cara paling aman: Gunakan $gte dan $lte dengan objek Date yang sudah dibuat.
+    // MongoDB menyimpan timestamp dalam format UTC (ISODate).
+    // new Date() di Node.js juga menghasilkan objek yang merepresentasikan waktu UTC jika string input adalah ISO 8601.
+
+    // Jika format input adalah 'YYYY-MM-DDTHH:mm' (tanpa 'Z' atau offset),
+    // new Date('2024-11-03T15:00') di Node.js akan menganggapnya sebagai waktu LOCAL.
+    // Kita perlu pastikan ini sesuai dengan waktu yang disimpan di MongoDB (UTC).
+    // Solusi: Konversi ke UTC atau tambahkan offset WITA (-8 jam) untuk membuat objek Date yang benar-benar mewakili WITA dalam UTC internal MongoDB.
+    // Atau, lebih mudah: Gunakan format yang pasti dianggap UTC oleh new Date(), yaitu dengan 'Z' atau offset.
+
+    // Contoh: Jika input frontend adalah '2024-11-03T15:00' (WITA), kita ingin filternya mencakup 15:00 WITA.
+    // WITA adalah UTC+8. Jadi 15:00 WITA = 07:00 UTC (hari yang sama).
+    // Kita bisa buat objek Date mewakili 15:00 WITA dengan mengurangi 8 jam dari waktu yang dianggap UTC.
+    // startDateObj = new Date(startDateObj.getTime() - 8*3600000); // Kurangi 8 jam
+    // endDateObj = new Date(endDateObj.getTime() - 8*3600000);   // Kurangi 8 jam
+    // TAPI, ini bisa rumit dan rawan kesalahan jika server berjalan di zona waktu berbeda.
+
+    // Solusi yang lebih robust dan umum digunakan:
+    // 1. Di frontend, ubah input datetime-local ke ISO string dalam UTC sebelum dikirim.
+    // 2. Atau, di backend, tangani konversi jika format pasti adalah 'YYYY-MM-DDTHH:mm' (local browser time).
+
+    // Karena input dari datetime-local adalah waktu lokal browser, new Date(input) akan membuat objek Date
+    // yang mewakili waktu *itu* di zona waktu lokal browser.
+    // Kita asumsikan input adalah WITA (karena proyek Anda dari Indonesia Timur).
+    // Untuk membuat filter yang benar untuk MongoDB (yang menyimpan dalam UTC),
+    // kita perlu mengkonversi waktu WITA ini ke representasi UTC.
+    // Misalnya, 2024-11-03T15:00 WITA = 2024-11-03T07:00:00.000Z UTC
+    // Kita bisa lakukan konversi manual.
+
+    // new Date().getTimezoneOffset() mengembalikan offset *dari* UTC *ke* local time, dalam menit.
+      // Kita ingin mengkonversi dari local (WITA) ke UTC.
+      // Jadi, kita perlu mengurangi offset WITA.
+      // Namun, karena getTimezoneOffset() sudah menghitung selisih ke UTC, kita cukup gunakan waktu dalam milliseconds
+      // dan kurangi 8 jam (dalam ms) untuk mendapatkan waktu yang benar-benar mewakili WITA dalam UTC.
+      // Atau, lebih jelas: Buat objek Date yang *secara internal* mewakili waktu UTC yang setara dengan WITA input.
+      // Caranya: Ambil waktu dalam ms sejak epoch untuk waktu WITA, lalu kurangi offset WITA terhadap UTC.
