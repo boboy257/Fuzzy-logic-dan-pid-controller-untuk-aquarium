@@ -15,7 +15,6 @@ const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_TOPIC_DATA = "unhas/informatika/aquarium/data";
 const char *MQTT_TOPIC_MODE = "unhas/informatika/aquarium/mode";
-// const char *MQTT_TOPIC_METRICS = ...; // DIHAPUS
 const char *MQTT_CLIENT_ID = "esp32-research-aquarium";
 
 // Pin Configuration
@@ -31,13 +30,6 @@ enum ControlMode
 };
 ControlMode kontrolAktif = FUZZY;
 
-// Experiment Control
-bool experimentRunning = false;
-unsigned long experimentStartTime = 0;
-unsigned long experimentDuration = 600000; // 10 minutes default
-String experimentID = "";
-
-// Setpoints
 float suhuSetpoint = 28.0f;
 float turbiditySetpoint = 10.0f;
 
@@ -55,8 +47,6 @@ double Kd_keruh = 1.0;
 double integralSumKeruh = 0.0;
 double lastErrorKeruh = 0.0;
 
-// --- SEMUA VARIABEL PERFORMANCE METRICS DIHAPUS ---
-
 // Sensor Calibration
 const int NILAI_ADC_JERNIH = 9475;
 const int NILAI_ADC_KERUH = 3550;
@@ -65,9 +55,7 @@ const int NILAI_ADC_KERUH = 3550;
 unsigned long lastTimeSuhu = 0;
 unsigned long lastTimeKeruh = 0;
 unsigned long waktuTerakhirKirim = 0;
-// unsigned long waktuTerakhirMetrics = 0; // DIHAPUS
 const long intervalKirim = 1000; // 1 second for research
-// const long intervalMetrics = 5000; // DIHAPUS
 
 // PWM Configuration
 const int PWM_CHANNEL_SUHU = 0;
@@ -253,12 +241,6 @@ void resetPIDKeruh()
 }
 
 // =========================================================================
-//                PERFORMANCE METRICS CALCULATION
-// =========================================================================
-// --- SELURUH BLOK FUNGSI updateTempMetrics(), updateTurbMetrics(), ---
-// --- dan resetMetrics() DIHAPUS ---
-
-// =========================================================================
 //                WIFI & MQTT
 // =========================================================================
 void setup_wifi()
@@ -315,24 +297,7 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       kontrolAktif = PID;
     }
-    Serial.println("[DEBUG] Mode changed to: " + mode); // Tambahkan log
-  }
-
-  // Experiment Control
-  if (doc.containsKey("experiment_start") && doc["experiment_start"])
-  {
-    experimentRunning = true;
-    experimentStartTime = millis();
-    experimentID = doc.containsKey("experiment_id") ? doc["experiment_id"].as<String>() : String(millis());
-    experimentDuration = doc.containsKey("duration") ? doc["duration"].as<unsigned long>() : 600000;
-    // resetMetrics(); // DIHAPUS
-    Serial.println("[EXP] Started: " + experimentID);
-  }
-
-  if (doc.containsKey("experiment_stop") && doc["experiment_stop"])
-  {
-    experimentRunning = false;
-    Serial.println("[EXP] Stopped: " + experimentID);
+    Serial.println("[DEBUG] Mode changed to: " + mode);
   }
 
   // Setpoints
@@ -355,20 +320,10 @@ void callback(char *topic, byte *payload, unsigned int length)
   if (doc.containsKey("kd_keruh"))
     Kd_keruh = doc["kd_keruh"];
 
-  // TAMBAHKAN LOG INI DI AKHIR FUNGSI
   Serial.println("[DEBUG] ESP32 finished processing MQTT message");
-  Serial.println("[DEBUG] Suhu setpoint updated: " + String(suhuSetpoint));       // Tambahkan log
-  Serial.println("[DEBUG] Keruh setpoint updated: " + String(turbiditySetpoint)); // Tambahkan log
-  Serial.println("[DEBUG] Kp suhu updated: " + String(Kp_suhu));                  // Tambahkan log
-  Serial.println("[DEBUG] Ki suhu updated: " + String(Ki_suhu));                  // Tambahkan log
-  Serial.println("[DEBUG] Kd suhu updated: " + String(Kd_suhu));                  // Tambahkan log
-  Serial.println("[DEBUG] Kp keruh updated: " + String(Kp_keruh));                // Tambahkan log
-  Serial.println("[DEBUG] Ki keruh updated: " + String(Ki_keruh));                // Tambahkan log
-  Serial.println("[DEBUG] Kd keruh updated: " + String(Kd_keruh));                // Tambahkan log
-
+  Serial.println("[DEBUG] Suhu setpoint updated: " + String(suhuSetpoint));
+  Serial.println("[DEBUG] Keruh setpoint updated: " + String(turbiditySetpoint));
   Serial.println("[DEBUG] After update: kontrolAktif = " + String(kontrolAktif));
-  Serial.println("[DEBUG] After update: suhuSetpoint = " + String(suhuSetpoint));
-  Serial.println("[DEBUG] After update: turbiditySetpoint = " + String(turbiditySetpoint));
 }
 
 bool reconnect_mqtt()
@@ -448,21 +403,14 @@ void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh
   doc["setpoint_suhu"] = suhuSetpoint;
   doc["setpoint_keruh"] = turbiditySetpoint;
 
-  // Experiment Info
-  doc["experiment_running"] = experimentRunning;
-  if (experimentRunning)
-  {
-    doc["experiment_id"] = experimentID;
-    doc["experiment_elapsed_s"] = (millis() - experimentStartTime) / 1000;
-  }
+  // --- Blok Experiment Info DIHAPUS ---
+  // doc["experiment_running"] = experimentRunning;
+  // if (experimentRunning) ...
 
   char buffer[512];
   serializeJson(doc, buffer);
-  // Serial.println(buffer); // <-- TAMBAHKAN LOG INI UNTUK MELIHAT ISI DATA
   mqttClient.publish(MQTT_TOPIC_DATA, buffer, false);
 }
-
-// --- FUNGSI kirimMetricsMQTT() DIHAPUS ---
 
 // =========================================================================
 //                SETUP
@@ -511,13 +459,8 @@ void loop()
   }
   mqttClient.loop();
 
-  // Check experiment timeout
-  if (experimentRunning &&
-      (millis() - experimentStartTime) > experimentDuration)
-  {
-    experimentRunning = false;
-    Serial.println("[EXP] Timeout - Auto stopped");
-  }
+  // --- Blok Check experiment timeout DIHAPUS ---
+  // if (experimentRunning && ...
 
   unsigned long now = millis();
 
@@ -533,11 +476,11 @@ void loop()
 
     // Calculate Errors
     float errorSuhu = suhuSetpoint - suhuAktual;
-    float errorKeruh = turbidityPersen - turbiditySetpoint; // DIBALIK: error = aktual - setpoint
+    float errorKeruh = turbidityPersen - turbiditySetpoint;
 
     // Control Outputs
     double dayaOutputSuhu = (kontrolAktif == FUZZY) ? hitungFuzzySuhu(errorSuhu) : hitungPIDSuhu(errorSuhu);
-    double dayaOutputKeruh = (kontrolAktif == FUZZY) ? hitungFuzzyKeruh(errorKeruh) : hitungPIDKeruh(errorKeruh); // Gunakan errorKeruh
+    double dayaOutputKeruh = (kontrolAktif == FUZZY) ? hitungFuzzyKeruh(errorKeruh) : hitungPIDKeruh(errorKeruh);
 
     int pwmSuhu = constrain((int)(dayaOutputSuhu * 2.55), 0, 255);
     int pwmKeruh = constrain((int)(dayaOutputKeruh * 2.55), 0, 255);
@@ -545,14 +488,9 @@ void loop()
     ledcWrite(PWM_CHANNEL_SUHU, pwmSuhu);
     ledcWrite(PWM_CHANNEL_KERUH, pwmKeruh);
 
-    // Update Metrics
-    // updateTempMetrics(suhuAktual);     // DIHAPUS
-    // updateTurbMetrics(turbidityPersen); // DIHAPUS
-
     // Send Data
     if (mqttClient.connected())
     {
-      // Serial.println("[DEBUG] Sending data to MQTT:"); // <-- TAMBAHKAN LOG INI
       kirimDataMQTT(suhuAktual, turbidityPersen, dayaOutputSuhu, dayaOutputKeruh,
                     errorSuhu, errorKeruh);
     }
@@ -562,7 +500,4 @@ void loop()
                   millis() / 1000, suhuAktual, suhuSetpoint, errorSuhu, pwmSuhu,
                   turbidityPersen, turbiditySetpoint, errorKeruh, pwmKeruh);
   }
-
-  // Metrics Publishing Loop
-  // --- BLOK 'if (now - waktuTerakhirMetrics >= intervalMetrics)' DIHAPUS ---
 }
