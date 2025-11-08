@@ -7,7 +7,7 @@
 #include <Adafruit_ADS1X15.h>
 
 // =========================================================================
-//                   CONFIGURATION
+//                  CONFIGURATION
 // =========================================================================
 const char *WIFI_SSID = "Private u52";
 const char *WIFI_PASSWORD = "12345678";
@@ -15,7 +15,7 @@ const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_TOPIC_DATA = "unhas/informatika/aquarium/data";
 const char *MQTT_TOPIC_MODE = "unhas/informatika/aquarium/mode";
-const char *MQTT_TOPIC_METRICS = "unhas/informatika/aquarium/metrics";
+// const char *MQTT_TOPIC_METRICS = ...; // DIHAPUS
 const char *MQTT_CLIENT_ID = "esp32-research-aquarium";
 
 // Pin Configuration
@@ -55,27 +55,7 @@ double Kd_keruh = 1.0;
 double integralSumKeruh = 0.0;
 double lastErrorKeruh = 0.0;
 
-// Performance Metrics - Temperature
-float peakTempValue = 0.0f;
-float peakTempTime = 0.0f;
-bool tempSettled = false;
-unsigned long tempSettlingStartTime = 0;
-float tempSettlingTime = 0.0f;
-float tempOvershoot = 0.0f;
-float tempSteadyStateError = 0.0f;
-
-// Performance Metrics - Turbidity
-float peakTurbValue = 0.0f;
-float peakTurbTime = 0.0f;
-bool turbSettled = false;
-unsigned long turbSettlingStartTime = 0;
-float turbSettlingTime = 0.0f;
-float turbOvershoot = 0.0f;
-float turbSteadyStateError = 0.0f;
-
-// Settling Criteria (±2% of setpoint)
-const float SETTLING_TOLERANCE_PERCENT = 2.0f;
-const unsigned long SETTLING_DURATION_MS = 5000; // 5 seconds
+// --- SEMUA VARIABEL PERFORMANCE METRICS DIHAPUS ---
 
 // Sensor Calibration
 const int NILAI_ADC_JERNIH = 9475;
@@ -85,9 +65,9 @@ const int NILAI_ADC_KERUH = 3550;
 unsigned long lastTimeSuhu = 0;
 unsigned long lastTimeKeruh = 0;
 unsigned long waktuTerakhirKirim = 0;
-unsigned long waktuTerakhirMetrics = 0;
-const long intervalKirim = 1000;   // 1 second for research
-const long intervalMetrics = 5000; // 5 seconds for metrics
+// unsigned long waktuTerakhirMetrics = 0; // DIHAPUS
+const long intervalKirim = 1000; // 1 second for research
+// const long intervalMetrics = 5000; // DIHAPUS
 
 // PWM Configuration
 const int PWM_CHANNEL_SUHU = 0;
@@ -107,7 +87,7 @@ float suhuTerakhir = 25.0f;
 int turbidityTerakhir = 0;
 
 // =========================================================================
-//                   FUZZY LOGIC - TEMPERATURE
+//                FUZZY LOGIC - TEMPERATURE
 // =========================================================================
 float membershipPanasSuhu(float error)
 {
@@ -162,7 +142,7 @@ float hitungFuzzySuhu(float errorSuhu)
 }
 
 // =========================================================================
-//                   FUZZY LOGIC - TURBIDITY
+//                FUZZY LOGIC - TURBIDITY
 // =========================================================================
 float membershipJernihKeruh(float error)
 {
@@ -217,7 +197,7 @@ float hitungFuzzyKeruh(float errorKeruh)
 }
 
 // =========================================================================
-//                   PID CONTROL - TEMPERATURE
+//                PID CONTROL - TEMPERATURE
 // =========================================================================
 double hitungPIDSuhu(float errorSuhu)
 {
@@ -245,7 +225,7 @@ void resetPIDSuhu()
 }
 
 // =========================================================================
-//                   PID CONTROL - TURBIDITY
+//                PID CONTROL - TURBIDITY
 // =========================================================================
 double hitungPIDKeruh(float errorKeruh)
 {
@@ -273,131 +253,13 @@ void resetPIDKeruh()
 }
 
 // =========================================================================
-//                   PERFORMANCE METRICS CALCULATION
+//                PERFORMANCE METRICS CALCULATION
 // =========================================================================
-void updateTempMetrics(float currentTemp)
-{
-  if (!experimentRunning)
-    return;
-
-  float elapsedTime = (millis() - experimentStartTime) / 1000.0f;
-  float error = abs(currentTemp - suhuSetpoint);
-  float tolerance = suhuSetpoint * (SETTLING_TOLERANCE_PERCENT / 100.0f);
-
-  // Peak Detection
-  if (currentTemp > peakTempValue)
-  {
-    peakTempValue = currentTemp;
-    peakTempTime = elapsedTime;
-  }
-
-  // Overshoot Calculation (only for heating - when setpoint > initial)
-  if (peakTempValue > suhuSetpoint)
-  {
-    tempOvershoot = ((peakTempValue - suhuSetpoint) / suhuSetpoint) * 100.0f;
-  }
-
-  // Settling Time Detection
-  if (!tempSettled)
-  {
-    if (error <= tolerance)
-    {
-      if (tempSettlingStartTime == 0)
-      {
-        tempSettlingStartTime = millis();
-      }
-      else if (millis() - tempSettlingStartTime >= SETTLING_DURATION_MS)
-      {
-        tempSettled = true;
-        tempSettlingTime = elapsedTime;
-      }
-    }
-    else
-    {
-      tempSettlingStartTime = 0; // Reset if out of tolerance
-    }
-  }
-
-  // Steady State Error (after settling)
-  if (tempSettled)
-  {
-    tempSteadyStateError = error;
-  }
-}
-
-void updateTurbMetrics(float currentTurb)
-{
-  if (!experimentRunning)
-    return;
-
-  float elapsedTime = (millis() - experimentStartTime) / 1000.0f;
-  float error = abs(currentTurb - turbiditySetpoint);
-  float tolerance = turbiditySetpoint * (SETTLING_TOLERANCE_PERCENT / 100.0f);
-
-  // Peak Detection
-  if (currentTurb > peakTurbValue)
-  {
-    peakTurbValue = currentTurb;
-    peakTurbTime = elapsedTime;
-  }
-
-  // Overshoot Calculation
-  if (peakTurbValue > turbiditySetpoint)
-  {
-    turbOvershoot = ((peakTurbValue - turbiditySetpoint) / turbiditySetpoint) * 100.0f;
-  }
-
-  // Settling Time Detection
-  if (!turbSettled)
-  {
-    if (error <= tolerance)
-    {
-      if (turbSettlingStartTime == 0)
-      {
-        turbSettlingStartTime = millis();
-      }
-      else if (millis() - turbSettlingStartTime >= SETTLING_DURATION_MS)
-      {
-        turbSettled = true;
-        turbSettlingTime = elapsedTime;
-      }
-    }
-    else
-    {
-      turbSettlingStartTime = 0;
-    }
-  }
-
-  // Steady State Error
-  if (turbSettled)
-  {
-    turbSteadyStateError = error;
-  }
-}
-
-void resetMetrics()
-{
-  // Temperature Metrics
-  peakTempValue = 0.0f;
-  peakTempTime = 0.0f;
-  tempSettled = false;
-  tempSettlingStartTime = 0;
-  tempSettlingTime = 0.0f;
-  tempOvershoot = 0.0f;
-  tempSteadyStateError = 0.0f;
-
-  // Turbidity Metrics
-  peakTurbValue = 0.0f;
-  peakTurbTime = 0.0f;
-  turbSettled = false;
-  turbSettlingStartTime = 0;
-  turbSettlingTime = 0.0f;
-  turbOvershoot = 0.0f;
-  turbSteadyStateError = 0.0f;
-}
+// --- SELURUH BLOK FUNGSI updateTempMetrics(), updateTurbMetrics(), ---
+// --- dan resetMetrics() DIHAPUS ---
 
 // =========================================================================
-//                   WIFI & MQTT
+//                WIFI & MQTT
 // =========================================================================
 void setup_wifi()
 {
@@ -463,7 +325,7 @@ void callback(char *topic, byte *payload, unsigned int length)
     experimentStartTime = millis();
     experimentID = doc.containsKey("experiment_id") ? doc["experiment_id"].as<String>() : String(millis());
     experimentDuration = doc.containsKey("duration") ? doc["duration"].as<unsigned long>() : 600000;
-    resetMetrics();
+    // resetMetrics(); // DIHAPUS
     Serial.println("[EXP] Started: " + experimentID);
   }
 
@@ -529,7 +391,7 @@ bool reconnect_mqtt()
 }
 
 // =========================================================================
-//                   SENSOR FUNCTIONS
+//                SENSOR FUNCTIONS
 // =========================================================================
 float bacaSuhuDS18B20()
 {
@@ -565,7 +427,7 @@ float konversiTurbidityKePersen(int adcValue)
 }
 
 // =========================================================================
-//                   MQTT PUBLISH
+//                MQTT PUBLISH
 // =========================================================================
 void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh,
                    float errSuhu, float errKeruh)
@@ -594,57 +456,16 @@ void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh
     doc["experiment_elapsed_s"] = (millis() - experimentStartTime) / 1000;
   }
 
-  // PID Internals (for analysis)
- /*  if (kontrolAktif == PID)
-  {
-    doc["pid_integral_suhu"] = round(integralSumSuhu * 1000) / 1000.0;
-    doc["pid_integral_keruh"] = round(integralSumKeruh * 1000) / 1000.0;
-  } */
-
   char buffer[512];
   serializeJson(doc, buffer);
-  //Serial.println(buffer); // <-- TAMBAHKAN LOG INI UNTUK MELIHAT ISI DATA
+  // Serial.println(buffer); // <-- TAMBAHKAN LOG INI UNTUK MELIHAT ISI DATA
   mqttClient.publish(MQTT_TOPIC_DATA, buffer, false);
 }
 
-void kirimMetricsMQTT()
-{
-  if (!experimentRunning)
-    return;
-
-  StaticJsonDocument<512> doc;
-
-  doc["experiment_id"] = experimentID;
-  doc["kontrol_aktif"] = (kontrolAktif == FUZZY) ? "Fuzzy" : "PID";
-  doc["elapsed_s"] = (millis() - experimentStartTime) / 1000;
-
-  // Temperature Metrics
-  JsonObject temp = doc.createNestedObject("temperature");
-  temp["overshoot_percent"] = round(tempOvershoot * 100) / 100.0;
-  temp["settling_time_s"] = tempSettlingTime;
-  temp["steady_state_error"] = round(tempSteadyStateError * 1000) / 1000.0;
-  temp["peak_value"] = round(peakTempValue * 100) / 100.0;
-  temp["peak_time_s"] = peakTempTime;
-  temp["settled"] = tempSettled;
-
-  // Turbidity Metrics
-  JsonObject turb = doc.createNestedObject("turbidity");
-  turb["overshoot_percent"] = round(turbOvershoot * 100) / 100.0;
-  turb["settling_time_s"] = turbSettlingTime;
-  turb["steady_state_error"] = round(turbSteadyStateError * 1000) / 1000.0;
-  turb["peak_value"] = round(peakTurbValue * 100) / 100.0;
-  turb["peak_time_s"] = peakTurbTime;
-  turb["settled"] = turbSettled;
-
-  char buffer[512];
-  serializeJson(doc, buffer);
-  mqttClient.publish(MQTT_TOPIC_METRICS, buffer, false);
-
-  Serial.println("[METRICS] Published");
-}
+// --- FUNGSI kirimMetricsMQTT() DIHAPUS ---
 
 // =========================================================================
-//                   SETUP
+//                SETUP
 // =========================================================================
 void setup()
 {
@@ -680,7 +501,7 @@ void setup()
 }
 
 // =========================================================================
-//                   MAIN LOOP
+//                MAIN LOOP
 // =========================================================================
 void loop()
 {
@@ -712,12 +533,11 @@ void loop()
 
     // Calculate Errors
     float errorSuhu = suhuSetpoint - suhuAktual;
-    float errorKeruh = turbidityPersen - turbiditySetpoint;
+    float errorKeruh = turbidityPersen - turbiditySetpoint; // DIBALIK: error = aktual - setpoint
 
     // Control Outputs
     double dayaOutputSuhu = (kontrolAktif == FUZZY) ? hitungFuzzySuhu(errorSuhu) : hitungPIDSuhu(errorSuhu);
-
-    double dayaOutputKeruh = (kontrolAktif == FUZZY) ? hitungFuzzyKeruh(errorKeruh) : hitungPIDKeruh(errorKeruh);
+    double dayaOutputKeruh = (kontrolAktif == FUZZY) ? hitungFuzzyKeruh(errorKeruh) : hitungPIDKeruh(errorKeruh); // Gunakan errorKeruh
 
     int pwmSuhu = constrain((int)(dayaOutputSuhu * 2.55), 0, 255);
     int pwmKeruh = constrain((int)(dayaOutputKeruh * 2.55), 0, 255);
@@ -726,13 +546,13 @@ void loop()
     ledcWrite(PWM_CHANNEL_KERUH, pwmKeruh);
 
     // Update Metrics
-    updateTempMetrics(suhuAktual);
-    updateTurbMetrics(turbidityPersen);
+    // updateTempMetrics(suhuAktual);     // DIHAPUS
+    // updateTurbMetrics(turbidityPersen); // DIHAPUS
 
     // Send Data
     if (mqttClient.connected())
     {
-      //Serial.println("[DEBUG] Sending data to MQTT:"); // <-- TAMBAHKAN LOG INI
+      // Serial.println("[DEBUG] Sending data to MQTT:"); // <-- TAMBAHKAN LOG INI
       kirimDataMQTT(suhuAktual, turbidityPersen, dayaOutputSuhu, dayaOutputKeruh,
                     errorSuhu, errorKeruh);
     }
@@ -744,9 +564,5 @@ void loop()
   }
 
   // Metrics Publishing Loop
-  if (now - waktuTerakhirMetrics >= intervalMetrics)
-  {
-    waktuTerakhirMetrics = now;
-    kirimMetricsMQTT();
-  }
+  // --- BLOK 'if (now - waktuTerakhirMetrics >= intervalMetrics)' DIHAPUS ---
 }
