@@ -426,6 +426,8 @@ void setup_wifi()
 
 void callback(char *topic, byte *payload, unsigned int length)
 {
+  Serial.println("[DEBUG] ESP32 received MQTT message:");
+  Serial.println((char *)payload);
   if (strcmp(topic, MQTT_TOPIC_MODE) != 0)
     return;
 
@@ -451,6 +453,7 @@ void callback(char *topic, byte *payload, unsigned int length)
     {
       kontrolAktif = PID;
     }
+    Serial.println("[DEBUG] Mode changed to: " + mode); // Tambahkan log
   }
 
   // Experiment Control
@@ -489,6 +492,21 @@ void callback(char *topic, byte *payload, unsigned int length)
     Ki_keruh = doc["ki_keruh"];
   if (doc.containsKey("kd_keruh"))
     Kd_keruh = doc["kd_keruh"];
+
+  // TAMBAHKAN LOG INI DI AKHIR FUNGSI
+  Serial.println("[DEBUG] ESP32 finished processing MQTT message");
+  Serial.println("[DEBUG] Suhu setpoint updated: " + String(suhuSetpoint));       // Tambahkan log
+  Serial.println("[DEBUG] Keruh setpoint updated: " + String(turbiditySetpoint)); // Tambahkan log
+  Serial.println("[DEBUG] Kp suhu updated: " + String(Kp_suhu));                  // Tambahkan log
+  Serial.println("[DEBUG] Ki suhu updated: " + String(Ki_suhu));                  // Tambahkan log
+  Serial.println("[DEBUG] Kd suhu updated: " + String(Kd_suhu));                  // Tambahkan log
+  Serial.println("[DEBUG] Kp keruh updated: " + String(Kp_keruh));                // Tambahkan log
+  Serial.println("[DEBUG] Ki keruh updated: " + String(Ki_keruh));                // Tambahkan log
+  Serial.println("[DEBUG] Kd keruh updated: " + String(Kd_keruh));                // Tambahkan log
+
+  Serial.println("[DEBUG] After update: kontrolAktif = " + String(kontrolAktif));
+  Serial.println("[DEBUG] After update: suhuSetpoint = " + String(suhuSetpoint));
+  Serial.println("[DEBUG] After update: turbiditySetpoint = " + String(turbiditySetpoint));
 }
 
 bool reconnect_mqtt()
@@ -577,14 +595,15 @@ void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh
   }
 
   // PID Internals (for analysis)
-  if (kontrolAktif == PID)
+ /*  if (kontrolAktif == PID)
   {
     doc["pid_integral_suhu"] = round(integralSumSuhu * 1000) / 1000.0;
     doc["pid_integral_keruh"] = round(integralSumKeruh * 1000) / 1000.0;
-  }
+  } */
 
   char buffer[512];
   serializeJson(doc, buffer);
+  //Serial.println(buffer); // <-- TAMBAHKAN LOG INI UNTUK MELIHAT ISI DATA
   mqttClient.publish(MQTT_TOPIC_DATA, buffer, false);
 }
 
@@ -713,6 +732,7 @@ void loop()
     // Send Data
     if (mqttClient.connected())
     {
+      //Serial.println("[DEBUG] Sending data to MQTT:"); // <-- TAMBAHKAN LOG INI
       kirimDataMQTT(suhuAktual, turbidityPersen, dayaOutputSuhu, dayaOutputKeruh,
                     errorSuhu, errorKeruh);
     }
