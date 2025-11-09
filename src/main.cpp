@@ -403,10 +403,6 @@ void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh
   doc["setpoint_suhu"] = suhuSetpoint;
   doc["setpoint_keruh"] = turbiditySetpoint;
 
-  // --- Blok Experiment Info DIHAPUS ---
-  // doc["experiment_running"] = experimentRunning;
-  // if (experimentRunning) ...
-
   char buffer[512];
   serializeJson(doc, buffer);
   mqttClient.publish(MQTT_TOPIC_DATA, buffer, false);
@@ -458,9 +454,6 @@ void loop()
     reconnect_mqtt();
   }
   mqttClient.loop();
-
-  // --- Blok Check experiment timeout DIHAPUS ---
-  // if (experimentRunning && ...
 
   unsigned long now = millis();
 
