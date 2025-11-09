@@ -34,16 +34,16 @@ float suhuSetpoint = 28.0f;
 float turbiditySetpoint = 10.0f;
 
 // PID Parameters - Temperature
-double Kp_suhu = 25.0;
-double Ki_suhu = 1.5;
-double Kd_suhu = 4.0;
+double Kp_suhu = 8.0;
+double Ki_suhu = 0.3;
+double Kd_suhu = 6.0;
 double integralSumSuhu = 0.0;
 double lastErrorSuhu = 0.0;
 
 // PID Parameters - Turbidity
-double Kp_keruh = 10.0;
-double Ki_keruh = 0.5;
-double Kd_keruh = 1.0;
+double Kp_keruh = 5.0;
+double Ki_keruh = 0.2;
+double Kd_keruh = 2.0;
 double integralSumKeruh = 0.0;
 double lastErrorKeruh = 0.0;
 
@@ -75,117 +75,174 @@ float suhuTerakhir = 25.0f;
 int turbidityTerakhir = 0;
 
 // =========================================================================
-//                FUZZY LOGIC - TEMPERATURE
+//          IMPROVED FUZZY LOGIC - TEMPERATURE (5 MEMBERSHIP FUNCTIONS)
 // =========================================================================
-float membershipPanasSuhu(float error)
+
+float membershipSangatDingin(float error)
 {
-  if (error <= -8.0f || error >= -2.0f)
+  if (error <= 4.0f)
     return 0.0f;
-  if (error >= -6.0f && error <= -4.0f)
+  if (error >= 8.0f)
     return 1.0f;
-  if (error > -8.0f && error < -6.0f)
-    return (error + 8.0f) / 2.0f;
-  if (error > -4.0f && error < -2.0f)
-    return (error + 2.0f) / -2.0f;
+  return (error - 4.0f) / 4.0f;
+}
+
+float membershipDingin(float error)
+{
+  if (error <= 1.0f || error >= 7.0f)
+    return 0.0f;
+  if (error >= 3.0f && error <= 5.0f)
+    return 1.0f;
+  if (error > 1.0f && error < 3.0f)
+    return (error - 1.0f) / 2.0f;
+  if (error > 5.0f && error < 7.0f)
+    return (7.0f - error) / 2.0f;
   return 0.0f;
 }
 
-float membershipSesuaiSuhu(float error)
+float membershipSesuai(float error)
 {
   if (error <= -2.0f || error >= 2.0f)
     return 0.0f;
-  if (error > -2.0f && error <= 0.0f)
-    return (error + 2.0f) / 2.0f;
-  if (error > 0.0f && error < 2.0f)
-    return (2.0f - error) / 2.0f;
+  if (error >= -0.5f && error <= 0.5f)
+    return 1.0f;
+  if (error > -2.0f && error < -0.5f)
+    return (error + 2.0f) / 1.5f;
+  if (error > 0.5f && error < 2.0f)
+    return (2.0f - error) / 1.5f;
   return 0.0f;
 }
 
-float membershipDinginSuhu(float error)
+float membershipPanas(float error)
 {
-  if (error <= 2.0f || error >= 8.0f)
+  if (error <= -7.0f || error >= -1.0f)
     return 0.0f;
-  if (error >= 4.0f && error <= 6.0f)
+  if (error >= -5.0f && error <= -3.0f)
     return 1.0f;
-  if (error > 2.0f && error < 4.0f)
-    return (error - 2.0f) / 2.0f;
-  if (error > 6.0f && error < 8.0f)
-    return (8.0f - error) / 2.0f;
+  if (error > -7.0f && error < -5.0f)
+    return (error + 7.0f) / 2.0f;
+  if (error > -3.0f && error < -1.0f)
+    return (-1.0f - error) / 2.0f;
   return 0.0f;
+}
+
+float membershipSangatPanas(float error)
+{
+  if (error >= -4.0f)
+    return 0.0f;
+  if (error <= -8.0f)
+    return 1.0f;
+  return (-4.0f - error) / 4.0f;
 }
 
 float hitungFuzzySuhu(float errorSuhu)
 {
-  float nilaiPanas = membershipPanasSuhu(errorSuhu);
-  float nilaiSesuai = membershipSesuaiSuhu(errorSuhu);
-  float nilaiDingin = membershipDinginSuhu(errorSuhu);
+  float mu_sangatDingin = membershipSangatDingin(errorSuhu);
+  float mu_dingin = membershipDingin(errorSuhu);
+  float mu_sesuai = membershipSesuai(errorSuhu);
+  float mu_panas = membershipPanas(errorSuhu);
+  float mu_sangatPanas = membershipSangatPanas(errorSuhu);
 
-  float kekuatanTinggi = nilaiDingin;
-  float kekuatanRendah = max(nilaiSesuai, nilaiPanas);
+  // Fuzzy Rules: 5 level output untuk kontrol yang lebih halus
+  float numerator = (mu_sangatDingin * 85.0f) +
+                    (mu_dingin * 60.0f) +
+                    (mu_sesuai * 30.0f) +
+                    (mu_panas * 10.0f) +
+                    (mu_sangatPanas * 0.0f);
 
-  float numerator = (kekuatanRendah * 10.0f) + (kekuatanTinggi * 90.0f);
-  float denominator = kekuatanRendah + kekuatanTinggi;
+  float denominator = mu_sangatDingin + mu_dingin + mu_sesuai + mu_panas + mu_sangatPanas;
 
-  return (denominator > 0.0f) ? (numerator / denominator) : 0.0f;
+  if (denominator < 0.01f)
+    return 30.0f;
+
+  return numerator / denominator;
 }
 
 // =========================================================================
-//                FUZZY LOGIC - TURBIDITY
+//          IMPROVED FUZZY LOGIC - TURBIDITY (5 MEMBERSHIP FUNCTIONS)
 // =========================================================================
-float membershipJernihKeruh(float error)
+
+float membershipSangatJernih(float error)
 {
-  if (error <= -20.0f || error >= -5.0f)
+  if (error >= -10.0f)
     return 0.0f;
-  if (error >= -15.0f && error <= -10.0f)
+  if (error <= -20.0f)
     return 1.0f;
-  if (error > -20.0f && error < -15.0f)
-    return (error + 20.0f) / 5.0f;
-  if (error > -10.0f && error < -5.0f)
-    return (error + 5.0f) / -5.0f;
+  return (-10.0f - error) / 10.0f;
+}
+
+float membershipJernih(float error)
+{
+  if (error <= -20.0f || error >= 0.0f)
+    return 0.0f;
+  if (error >= -12.0f && error <= -8.0f)
+    return 1.0f;
+  if (error > -20.0f && error < -12.0f)
+    return (error + 20.0f) / 8.0f;
+  if (error > -8.0f && error < 0.0f)
+    return (-error) / 8.0f;
   return 0.0f;
 }
 
 float membershipSesuaiKeruh(float error)
 {
-  if (error <= -5.0f || error >= 5.0f)
+  if (error <= -8.0f || error >= 8.0f)
     return 0.0f;
-  if (error > -5.0f && error <= 0.0f)
-    return (error + 5.0f) / 5.0f;
-  if (error > 0.0f && error < 5.0f)
-    return (5.0f - error) / 5.0f;
+  if (error >= -2.0f && error <= 2.0f)
+    return 1.0f;
+  if (error > -8.0f && error < -2.0f)
+    return (error + 8.0f) / 6.0f;
+  if (error > 2.0f && error < 8.0f)
+    return (8.0f - error) / 6.0f;
   return 0.0f;
 }
 
 float membershipKeruh(float error)
 {
-  if (error <= 5.0f || error >= 40.0f)
+  if (error <= 3.0f || error >= 30.0f)
     return 0.0f;
   if (error >= 10.0f && error <= 20.0f)
     return 1.0f;
-  if (error > 5.0f && error < 10.0f)
-    return (error - 5.0f) / 5.0f;
-  if (error > 20.0f && error < 40.0f)
-    return (40.0f - error) / 20.0f;
+  if (error > 3.0f && error < 10.0f)
+    return (error - 3.0f) / 7.0f;
+  if (error > 20.0f && error < 30.0f)
+    return (30.0f - error) / 10.0f;
   return 0.0f;
+}
+
+float membershipSangatKeruh(float error)
+{
+  if (error <= 20.0f)
+    return 0.0f;
+  if (error >= 35.0f)
+    return 1.0f;
+  return (error - 20.0f) / 15.0f;
 }
 
 float hitungFuzzyKeruh(float errorKeruh)
 {
-  float nilaiJernih = membershipJernihKeruh(errorKeruh);
-  float nilaiSesuai = membershipSesuaiKeruh(errorKeruh);
-  float nilaiKeruh = membershipKeruh(errorKeruh);
+  float mu_sangatJernih = membershipSangatJernih(errorKeruh);
+  float mu_jernih = membershipJernih(errorKeruh);
+  float mu_sesuai = membershipSesuaiKeruh(errorKeruh);
+  float mu_keruh = membershipKeruh(errorKeruh);
+  float mu_sangatKeruh = membershipSangatKeruh(errorKeruh);
 
-  float kekuatanTinggi = nilaiKeruh;
-  float kekuatanRendah = max(nilaiSesuai, nilaiJernih);
+  float numerator = (mu_sangatJernih * 0.0f) +
+                    (mu_jernih * 15.0f) +
+                    (mu_sesuai * 30.0f) +
+                    (mu_keruh * 60.0f) +
+                    (mu_sangatKeruh * 85.0f);
 
-  float numerator = (kekuatanRendah * 10.0f) + (kekuatanTinggi * 90.0f);
-  float denominator = kekuatanRendah + kekuatanTinggi;
+  float denominator = mu_sangatJernih + mu_jernih + mu_sesuai + mu_keruh + mu_sangatKeruh;
 
-  return (denominator > 0.0f) ? (numerator / denominator) : 0.0f;
+  if (denominator < 0.01f)
+    return 30.0f;
+
+  return numerator / denominator;
 }
 
 // =========================================================================
-//                PID CONTROL - TEMPERATURE
+//          IMPROVED PID CONTROL - TEMPERATURE
 // =========================================================================
 double hitungPIDSuhu(float errorSuhu)
 {
@@ -193,12 +250,37 @@ double hitungPIDSuhu(float errorSuhu)
   double elapsedTime = (double)(now - lastTimeSuhu);
   if (elapsedTime < 1)
     elapsedTime = 1;
+  double dt = elapsedTime / 1000.0;
 
-  integralSumSuhu += errorSuhu * elapsedTime / 1000.0;
-  integralSumSuhu = constrain(integralSumSuhu, -100.0, 100.0); // Anti-windup
+  // PROPORTIONAL
+  double P = Kp_suhu * errorSuhu;
 
-  double derivative = (errorSuhu - lastErrorSuhu) / (elapsedTime / 1000.0);
-  double output = Kp_suhu * errorSuhu + Ki_suhu * integralSumSuhu + Kd_suhu * derivative;
+  // INTEGRAL dengan anti-windup yang lebih baik
+  integralSumSuhu += errorSuhu * dt;
+
+  // Anti-windup dengan batas lebih ketat
+  if (integralSumSuhu > 20.0)
+    integralSumSuhu = 20.0;
+  if (integralSumSuhu < -20.0)
+    integralSumSuhu = -20.0;
+
+  // Reset 50% saat crossing setpoint
+  if ((errorSuhu > 0 && lastErrorSuhu < 0) || (errorSuhu < 0 && lastErrorSuhu > 0))
+  {
+    integralSumSuhu *= 0.5;
+  }
+
+  double I = Ki_suhu * integralSumSuhu;
+
+  // DERIVATIVE dengan low-pass filter
+  static double lastDerivative = 0.0;
+  double derivative = (errorSuhu - lastErrorSuhu) / dt;
+  derivative = 0.3 * derivative + 0.7 * lastDerivative;
+  lastDerivative = derivative;
+
+  double D = Kd_suhu * derivative;
+
+  double output = P + I + D;
 
   lastErrorSuhu = errorSuhu;
   lastTimeSuhu = now;
@@ -210,10 +292,11 @@ void resetPIDSuhu()
 {
   integralSumSuhu = 0.0;
   lastErrorSuhu = 0.0;
+  lastTimeSuhu = millis();
 }
 
 // =========================================================================
-//                PID CONTROL - TURBIDITY
+//          IMPROVED PID CONTROL - TURBIDITY
 // =========================================================================
 double hitungPIDKeruh(float errorKeruh)
 {
@@ -221,12 +304,31 @@ double hitungPIDKeruh(float errorKeruh)
   double elapsedTime = (double)(now - lastTimeKeruh);
   if (elapsedTime < 1)
     elapsedTime = 1;
+  double dt = elapsedTime / 1000.0;
 
-  integralSumKeruh += errorKeruh * elapsedTime / 1000.0;
-  integralSumKeruh = constrain(integralSumKeruh, -100.0, 100.0); // Anti-windup
+  double P = Kp_keruh * errorKeruh;
 
-  double derivative = (errorKeruh - lastErrorKeruh) / (elapsedTime / 1000.0);
-  double output = Kp_keruh * errorKeruh + Ki_keruh * integralSumKeruh + Kd_keruh * derivative;
+  integralSumKeruh += errorKeruh * dt;
+  if (integralSumKeruh > 30.0)
+    integralSumKeruh = 30.0;
+  if (integralSumKeruh < -30.0)
+    integralSumKeruh = -30.0;
+
+  if ((errorKeruh > 0 && lastErrorKeruh < 0) || (errorKeruh < 0 && lastErrorKeruh > 0))
+  {
+    integralSumKeruh *= 0.5;
+  }
+
+  double I = Ki_keruh * integralSumKeruh;
+
+  static double lastDerivativeKeruh = 0.0;
+  double derivative = (errorKeruh - lastErrorKeruh) / dt;
+  derivative = 0.3 * derivative + 0.7 * lastDerivativeKeruh;
+  lastDerivativeKeruh = derivative;
+
+  double D = Kd_keruh * derivative;
+
+  double output = P + I + D;
 
   lastErrorKeruh = errorKeruh;
   lastTimeKeruh = now;
@@ -238,6 +340,7 @@ void resetPIDKeruh()
 {
   integralSumKeruh = 0.0;
   lastErrorKeruh = 0.0;
+  lastTimeKeruh = millis();
 }
 
 // =========================================================================
@@ -423,13 +526,18 @@ void setup()
     while (1)
       delay(1000);
   }
+  Serial.println("[OK] ADS1115 initialized");
 
+  // Initialize PWM
   ledcSetup(PWM_CHANNEL_SUHU, PWM_FREQ, PWM_RESOLUTION);
   ledcAttachPin(HEATER_PIN, PWM_CHANNEL_SUHU);
   ledcSetup(PWM_CHANNEL_KERUH, PWM_FREQ, PWM_RESOLUTION);
   ledcAttachPin(FILTER_PUMP_PIN, PWM_CHANNEL_KERUH);
+  Serial.println("[OK] PWM channels configured");
 
+  // Initialize DS18B20
   sensors.begin();
+  Serial.println("[OK] DS18B20 sensor initialized");
 
   lastTimeSuhu = millis();
   lastTimeKeruh = millis();
