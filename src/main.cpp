@@ -17,10 +17,18 @@ const char *MQTT_TOPIC_DATA = "unhas/informatika/aquarium/data";
 const char *MQTT_TOPIC_MODE = "unhas/informatika/aquarium/mode";
 const char *MQTT_CLIENT_ID = "esp32-research-aquarium";
 
-// Pin Configuration
+// Pin Configuration untuk L298N
 const int SENSOR_SUHU_PIN = 4;
-const int HEATER_PIN = 16;
-const int FILTER_PUMP_PIN = 17;
+
+// L298N Motor A - PTC Heater 12V DC
+const int HEATER_ENA = 16; // Enable A (PWM)
+const int HEATER_IN1 = 17; // Input 1
+const int HEATER_IN2 = 18; // Input 2
+
+// L298N Motor B - Diaphragm Pump 12V DC
+const int PUMP_ENB = 19; // Enable B (PWM)
+const int PUMP_IN3 = 25; // Input 3
+const int PUMP_IN4 = 26; // Input 4
 
 // Control Modes
 enum ControlMode
@@ -58,8 +66,8 @@ unsigned long waktuTerakhirKirim = 0;
 const long intervalKirim = 1000; // 1 second for research
 
 // PWM Configuration
-const int PWM_CHANNEL_SUHU = 0;
-const int PWM_CHANNEL_KERUH = 1;
+const int PWM_CHANNEL_HEATER = 0;
+const int PWM_CHANNEL_PUMP = 1;
 const int PWM_FREQ = 5000;
 const int PWM_RESOLUTION = 8;
 
@@ -75,66 +83,154 @@ float suhuTerakhir = 25.0f;
 int turbidityTerakhir = 0;
 
 // =========================================================================
+//          L298N MOTOR CONTROL FUNCTIONS
+// =========================================================================
+
+void setHeaterSpeed(int pwmValue)
+{
+  // Constrain PWM value
+  pwmValue = constrain(pwmValue, 0, 255);
+
+  if (pwmValue == 0)
+  {
+    // Motor OFF
+    digitalWrite(HEATER_IN1, LOW);
+    digitalWrite(HEATER_IN2, LOW);
+    ledcWrite(PWM_CHANNEL_HEATER, 0);
+  }
+  else
+  {
+    // Motor ON - Forward direction
+    digitalWrite(HEATER_IN1, HIGH);
+    digitalWrite(HEATER_IN2, LOW);
+    ledcWrite(PWM_CHANNEL_HEATER, pwmValue);
+  }
+}
+
+void setPumpSpeed(int pwmValue)
+{
+  // Constrain PWM value
+  pwmValue = constrain(pwmValue, 0, 255);
+
+  if (pwmValue == 0)
+  {
+    // Motor OFF
+    digitalWrite(PUMP_IN3, LOW);
+    digitalWrite(PUMP_IN4, LOW);
+    ledcWrite(PWM_CHANNEL_PUMP, 0);
+  }
+  else
+  {
+    // Motor ON - Forward direction
+    digitalWrite(PUMP_IN3, HIGH);
+    digitalWrite(PUMP_IN4, LOW);
+    ledcWrite(PWM_CHANNEL_PUMP, pwmValue);
+  }
+}
+
+void setupL298N()
+{
+  // Setup Heater pins (Motor A)
+  pinMode(HEATER_IN1, OUTPUT);
+  pinMode(HEATER_IN2, OUTPUT);
+  ledcSetup(PWM_CHANNEL_HEATER, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(HEATER_ENA, PWM_CHANNEL_HEATER);
+
+  // Setup Pump pins (Motor B)
+  pinMode(PUMP_IN3, OUTPUT);
+  pinMode(PUMP_IN4, OUTPUT);
+  ledcSetup(PWM_CHANNEL_PUMP, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(PUMP_ENB, PWM_CHANNEL_PUMP);
+
+  // Initialize both motors to OFF
+  setHeaterSpeed(0);
+  setPumpSpeed(0);
+
+  Serial.println("[OK] L298N driver initialized");
+}
+
+// =========================================================================
 //          IMPROVED FUZZY LOGIC - TEMPERATURE (5 MEMBERSHIP FUNCTIONS)
 // =========================================================================
 
+// Fungsi Keanggotaan untuk Error Suhu (errorSuhu = suhuSetpoint - suhuAktual)
+// Asumsi suhuSetpoint = 28.0f
+// Rentang error yang relevan: sekitar -6 hingga +6 (artinya suhu aktual antara 22°C hingga 34°C, area operasional utama)
+
+// Fungsi: Sangat Dingin
+// Rentang Aktif: Error > 4.0 (artinya suhuAktual < 24.0°C)
+// Puncak: Error >= 6.0 (artinya suhuAktual <= 22.0°C) <-- Lebih realistis untuk akuarium
 float membershipSangatDingin(float error)
 {
   if (error <= 4.0f)
-    return 0.0f;
-  if (error >= 8.0f)
-    return 1.0f;
-  return (error - 4.0f) / 4.0f;
+    return 0.0f; // Turun
+  if (error >= 6.0f)
+    return 1.0f;                // Puncak
+  return (error - 4.0f) / 2.0f; // Naik: dari 0.0 di error=4.0 ke 1.0 di error=6.0
 }
 
+// Fungsi: Dingin
+// Rentang Aktif: 1.0 < Error < 5.0 (artinya 23.0°C < suhuAktual < 27.0°C)
+// Puncak: 2.0 <= Error <= 4.0 (artinya 24.0°C <= suhuAktual <= 26.0°C)
 float membershipDingin(float error)
 {
-  if (error <= 1.0f || error >= 7.0f)
-    return 0.0f;
-  if (error >= 3.0f && error <= 5.0f)
-    return 1.0f;
-  if (error > 1.0f && error < 3.0f)
-    return (error - 1.0f) / 2.0f;
-  if (error > 5.0f && error < 7.0f)
-    return (7.0f - error) / 2.0f;
+  if (error <= 1.0f || error >= 5.0f)
+    return 0.0f; // Luar rentang aktif
+  if (error >= 2.0f && error <= 4.0f)
+    return 1.0f; // Puncak
+  if (error > 1.0f && error < 2.0f)
+    return (error - 1.0f) / 1.0f; // Naik: dari 0.0 di error=1.0 ke 1.0 di error=2.0
+  if (error > 4.0f && error < 5.0f)
+    return (5.0f - error) / 1.0f; // Turun: dari 1.0 di error=4.0 ke 0.0 di error=5.0
   return 0.0f;
 }
 
+// Fungsi: Sesuai (ini adalah fungsi yang menunjukkan nilai sesuai dengan setpoint)
+// Rentang Aktif: -3.0 < Error < 3.0 (artinya 25.0°C < suhuAktual < 31.0°C)
+// Puncak: -1.0 <= Error <= 1.0 (artinya 27.0°C <= suhuAktual <= 29.0°C) <-- Diperlebar dari ±0.5 menjadi ±1.0
 float membershipSesuai(float error)
 {
-  if (error <= -2.0f || error >= 2.0f)
-    return 0.0f;
-  if (error >= -0.5f && error <= 0.5f)
-    return 1.0f;
-  if (error > -2.0f && error < -0.5f)
-    return (error + 2.0f) / 1.5f;
-  if (error > 0.5f && error < 2.0f)
-    return (2.0f - error) / 1.5f;
+  if (error <= -3.0f || error >= 3.0f)
+    return 0.0f; // Luar rentang aktif
+  if (error >= -1.0f && error <= 1.0f)
+    return 1.0f; // Puncak
+  if (error > -3.0f && error < -1.0f)
+    return (error + 3.0f) / 2.0f; // Naik: dari 0.0 di error=-3.0 ke 1.0 di error=-1.0
+  if (error > 1.0f && error < 3.0f)
+    return (3.0f - error) / 2.0f; // Turun: dari 1.0 di error=1.0 ke 0.0 di error=3.0
   return 0.0f;
 }
 
+// Fungsi: Panas
+// Rentang Aktif: -5.0 < Error < -1.0 (artinya 29.0°C < suhuAktual < 33.0°C)
+// Puncak: -4.0 <= Error <= -2.0 (artinya 30.0°C <= suhuAktual <= 32.0°C)
 float membershipPanas(float error)
 {
-  if (error <= -7.0f || error >= -1.0f)
-    return 0.0f;
-  if (error >= -5.0f && error <= -3.0f)
-    return 1.0f;
-  if (error > -7.0f && error < -5.0f)
-    return (error + 7.0f) / 2.0f;
-  if (error > -3.0f && error < -1.0f)
-    return (-1.0f - error) / 2.0f;
+  if (error <= -5.0f || error >= -1.0f)
+    return 0.0f; // Luar rentang aktif
+  if (error >= -4.0f && error <= -2.0f)
+    return 1.0f; // Puncak
+  if (error > -5.0f && error < -4.0f)
+    return (error + 5.0f) / 1.0f; // Naik: dari 0.0 di error=-5.0 ke 1.0 di error=-4.0
+  if (error > -2.0f && error < -1.0f)
+    return (-1.0f - error) / 1.0f; // Turun: dari 1.0 di error=-2.0 ke 0.0 di error=-1.0
   return 0.0f;
 }
 
+// Fungsi: Sangat Panas
+// Rentang Aktif: Error < -4.0 (artinya suhuAktual > 32.0°C)
+// Puncak: Error <= -6.0 (artinya suhuAktual >= 34.0°C) <-- Lebih realistis untuk akuarium
 float membershipSangatPanas(float error)
 {
   if (error >= -4.0f)
-    return 0.0f;
-  if (error <= -8.0f)
-    return 1.0f;
-  return (-4.0f - error) / 4.0f;
+    return 0.0f; // Turun
+  if (error <= -6.0f)
+    return 1.0f;                 // Puncak
+  return (-4.0f - error) / 2.0f; // Naik: dari 0.0 di error=-4.0 ke 1.0 di error=-6.0
 }
 
+// Fungsi utama Fuzzy Logic untuk Suhu
+// Pastikan juga fungsi ini menggunakan nama fungsi baru yang sudah disesuaikan
 float hitungFuzzySuhu(float errorSuhu)
 {
   float mu_sangatDingin = membershipSangatDingin(errorSuhu);
@@ -143,82 +239,109 @@ float hitungFuzzySuhu(float errorSuhu)
   float mu_panas = membershipPanas(errorSuhu);
   float mu_sangatPanas = membershipSangatPanas(errorSuhu);
 
-  // Fuzzy Rules: 5 level output untuk kontrol yang lebih halus
-  float numerator = (mu_sangatDingin * 85.0f) +
-                    (mu_dingin * 60.0f) +
-                    (mu_sesuai * 30.0f) +
-                    (mu_panas * 10.0f) +
-                    (mu_sangatPanas * 0.0f);
+  // --- Defuzzifikasi dengan Metode Centroid ---
+  // Asumsikan output crisp berdasarkan tingkat kebutuhan pemanasan untuk heater
+  // Output: 85% (heater maks), 60% (heater cepat), 30% (heater sedang), 10% (heater pelan), 0% (heater mati)
+  float numerator = (mu_sangatDingin * 85.0f) + // Jika sangat dingin, heater maks
+                    (mu_dingin * 60.0f) +       // Jika dingin, heater cepat
+                    (mu_sesuai * 30.0f) +       // Jika sesuai, heater sedang (untuk menjaga)
+                    (mu_panas * 10.0f) +        // Jika panas, heater pelan (mungkin hanya untuk sirkulasi kecil?)
+                    (mu_sangatPanas * 0.0f);    // Jika sangat panas, heater mati
 
   float denominator = mu_sangatDingin + mu_dingin + mu_sesuai + mu_panas + mu_sangatPanas;
 
   if (denominator < 0.01f)
-    return 30.0f;
+  {
+    // Jika semua membership = 0 (kemungkinan kecil, tapi aman)
+    // Kembalikan nilai default, misalnya nilai saat error nol (sesuai)
+    return 30.0f; // Nilai default saat di setpoint
+  }
 
-  return numerator / denominator;
+  return numerator / denominator; // Nilai output fuzzy akhir (0.0 - 85.0)
 }
 
 // =========================================================================
 //          IMPROVED FUZZY LOGIC - TURBIDITY (5 MEMBERSHIP FUNCTIONS)
 // =========================================================================
 
+// Fungsi Keanggotaan untuk Error Kekeruhan (errorKeruh = turbidityPersen - turbiditySetpoint)
+// Asumsi setpoint = 10.0f
+// Rentang error yang relevan: sekitar -10 hingga +15 (artinya nilai aktual antara 0% hingga 25%)
+
+// Fungsi: Sangat Jernih
+// Rentang Aktif: Error <= -6.0 (artinya turbidityPersen <= 4%)
+// Puncak: Error <= -8.0 (artinya turbidityPersen <= 2%)
 float membershipSangatJernih(float error)
 {
-  if (error >= -10.0f)
-    return 0.0f;
-  if (error <= -20.0f)
-    return 1.0f;
-  return (-10.0f - error) / 10.0f;
+  if (error <= -8.0f)
+    return 1.0f; // Puncak
+  if (error <= -6.0f)
+    return (-6.0f - error) / 2.0f; // Naik
+  return 0.0f;                     // Turun
 }
 
+// Fungsi: Jernih
+// Rentang Aktif: -8.0 < Error < 0.0 (artinya 2% < turbidityPersen < 10%)
+// Puncak: -4.0 <= Error <= -2.0 (artinya 6% <= turbidityPersen <= 8%)
 float membershipJernih(float error)
 {
-  if (error <= -20.0f || error >= 0.0f)
+  if (error <= -8.0f || error >= 0.0f)
     return 0.0f;
-  if (error >= -12.0f && error <= -8.0f)
-    return 1.0f;
-  if (error > -20.0f && error < -12.0f)
-    return (error + 20.0f) / 8.0f;
-  if (error > -8.0f && error < 0.0f)
-    return (-error) / 8.0f;
+  if (error >= -4.0f && error <= -2.0f)
+    return 1.0f; // Puncak
+  if (error > -8.0f && error < -4.0f)
+    return (error + 8.0f) / 4.0f; // Naik
+  if (error > -2.0f && error < 0.0f)
+    return (0.0f - error) / 2.0f; // Turun
   return 0.0f;
 }
 
+// Fungsi: Sesuai (ini adalah fungsi yang menunjukkan nilai sesuai dengan setpoint)
+// Rentang Aktif: -4.0 < Error < 4.0 (artinya 6% < turbidityPersen < 14%)
+// Puncak: -1.0 <= Error <= 1.0 (artinya 9% <= turbidityPersen <= 11%)
 float membershipSesuaiKeruh(float error)
 {
-  if (error <= -8.0f || error >= 8.0f)
+  if (error <= -4.0f || error >= 4.0f)
     return 0.0f;
-  if (error >= -2.0f && error <= 2.0f)
-    return 1.0f;
-  if (error > -8.0f && error < -2.0f)
-    return (error + 8.0f) / 6.0f;
-  if (error > 2.0f && error < 8.0f)
-    return (8.0f - error) / 6.0f;
+  if (error >= -1.0f && error <= 1.0f)
+    return 1.0f; // Puncak
+  if (error > -4.0f && error < -1.0f)
+    return (error + 4.0f) / 3.0f; // Naik
+  if (error > 1.0f && error < 4.0f)
+    return (4.0f - error) / 3.0f; // Turun
   return 0.0f;
 }
 
+// Fungsi: Keruh
+// Rentang Aktif: 1.0 < Error < 12.0 (artinya 11% < turbidityPersen < 22%)
+// Puncak: 5.0 <= Error <= 8.0 (artinya 15% <= turbidityPersen <= 18%)
 float membershipKeruh(float error)
 {
-  if (error <= 3.0f || error >= 30.0f)
+  if (error <= 1.0f || error >= 12.0f)
     return 0.0f;
-  if (error >= 10.0f && error <= 20.0f)
-    return 1.0f;
-  if (error > 3.0f && error < 10.0f)
-    return (error - 3.0f) / 7.0f;
-  if (error > 20.0f && error < 30.0f)
-    return (30.0f - error) / 10.0f;
+  if (error >= 5.0f && error <= 8.0f)
+    return 1.0f; // Puncak
+  if (error > 1.0f && error < 5.0f)
+    return (error - 1.0f) / 4.0f; // Naik
+  if (error > 8.0f && error < 12.0f)
+    return (12.0f - error) / 4.0f; // Turun
   return 0.0f;
 }
 
+// Fungsi: Sangat Keruh
+// Rentang Aktif: Error >= 9.0 (artinya turbidityPersen >= 19%)
+// Puncak: Error >= 15.0 (artinya turbidityPersen >= 25%)
 float membershipSangatKeruh(float error)
 {
-  if (error <= 20.0f)
-    return 0.0f;
-  if (error >= 35.0f)
-    return 1.0f;
-  return (error - 20.0f) / 15.0f;
+  if (error <= 9.0f)
+    return 0.0f; // Turun
+  if (error >= 15.0f)
+    return 1.0f;                // Puncak
+  return (error - 9.0f) / 6.0f; // Naik
 }
 
+// Fungsi utama Fuzzy Logic untuk Kekeruhan
+// Pastikan juga fungsi ini menggunakan nama fungsi baru yang sudah disesuaikan
 float hitungFuzzyKeruh(float errorKeruh)
 {
   float mu_sangatJernih = membershipSangatJernih(errorKeruh);
@@ -227,18 +350,25 @@ float hitungFuzzyKeruh(float errorKeruh)
   float mu_keruh = membershipKeruh(errorKeruh);
   float mu_sangatKeruh = membershipSangatKeruh(errorKeruh);
 
-  float numerator = (mu_sangatJernih * 0.0f) +
-                    (mu_jernih * 15.0f) +
-                    (mu_sesuai * 30.0f) +
-                    (mu_keruh * 60.0f) +
-                    (mu_sangatKeruh * 85.0f);
+  // --- Defuzzifikasi dengan Metode Centroid ---
+  // Asumsikan output crisp berdasarkan tingkat kekeruhan yang diinginkan untuk pompa
+  // Output: 0% (pompa mati), 15% (pompa pelan), 30% (pompa sedang), 60% (pompa cepat), 85% (pompa maks)
+  float numerator = (mu_sangatJernih * 0.0f) + // Jika sangat jernih, pompa mati
+                    (mu_jernih * 15.0f) +      // Jika jernih, pompa pelan
+                    (mu_sesuai * 30.0f) +      // Jika sesuai, pompa sedang (untuk menjaga sirkulasi)
+                    (mu_keruh * 60.0f) +       // Jika keruh, pompa cepat
+                    (mu_sangatKeruh * 85.0f);  // Jika sangat keruh, pompa maks
 
   float denominator = mu_sangatJernih + mu_jernih + mu_sesuai + mu_keruh + mu_sangatKeruh;
 
   if (denominator < 0.01f)
-    return 30.0f;
+  {
+    // Jika semua membership = 0 (kemungkinan kecil, tapi aman)
+    // Kembalikan nilai default, misalnya nilai saat error nol (sesuai)
+    return 30.0f; // Nilai default saat di setpoint
+  }
 
-  return numerator / denominator;
+  return numerator / denominator; // Nilai output fuzzy akhir (0.0 - 85.0)
 }
 
 // =========================================================================
@@ -517,7 +647,7 @@ void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh
 void setup()
 {
   Serial.begin(115200);
-  Serial.println("\n=== ESP32 Research Control System ===");
+  Serial.println("\n=== ESP32 Research Control System with L298N ===");
 
   Wire.begin();
   if (!ads.begin())
@@ -528,12 +658,8 @@ void setup()
   }
   Serial.println("[OK] ADS1115 initialized");
 
-  // Initialize PWM
-  ledcSetup(PWM_CHANNEL_SUHU, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(HEATER_PIN, PWM_CHANNEL_SUHU);
-  ledcSetup(PWM_CHANNEL_KERUH, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(FILTER_PUMP_PIN, PWM_CHANNEL_KERUH);
-  Serial.println("[OK] PWM channels configured");
+  // Initialize L298N Motor Driver
+  setupL298N();
 
   // Initialize DS18B20
   sensors.begin();
@@ -586,8 +712,9 @@ void loop()
     int pwmSuhu = constrain((int)(dayaOutputSuhu * 2.55), 0, 255);
     int pwmKeruh = constrain((int)(dayaOutputKeruh * 2.55), 0, 255);
 
-    ledcWrite(PWM_CHANNEL_SUHU, pwmSuhu);
-    ledcWrite(PWM_CHANNEL_KERUH, pwmKeruh);
+    // Control L298N Motors
+    setHeaterSpeed(pwmSuhu);
+    setPumpSpeed(pwmKeruh);
 
     // Send Data
     if (mqttClient.connected())
