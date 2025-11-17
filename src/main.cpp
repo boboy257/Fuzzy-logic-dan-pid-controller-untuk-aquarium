@@ -9,8 +9,22 @@
 // =========================================================================
 //                  CONFIGURATION
 // =========================================================================
-const char *WIFI_SSID = "Private u52";
-const char *WIFI_PASSWORD = "12345678";
+// WiFi Configuration - Support Multiple Networks
+struct WiFiCredentials
+{
+  const char *ssid;
+  const char *password;
+};
+
+// Definisikan Multiple WiFi (WiFi pertama akan dicoba terlebih dahulu)
+WiFiCredentials wifiNetworks[] = {
+    {"Private u52", "12345678"},     // WiFi Utama
+    {"iPhone 2", "bobo2002"} // WiFi Cadangan (ganti sesuai kebutuhan)
+    // Tambahkan WiFi lain jika diperlukan:
+};
+const int NUM_WIFI_NETWORKS = sizeof(wifiNetworks) / sizeof(wifiNetworks[0]);
+
+//MQTT Configuration
 const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_TOPIC_DATA = "unhas/informatika/aquarium/data";
@@ -55,15 +69,19 @@ double Kd_keruh = 2.0;
 double integralSumKeruh = 0.0;
 double lastErrorKeruh = 0.0;
 
-// Sensor Calibration
-const int NILAI_ADC_JERNIH = 9475;
-const int NILAI_ADC_KERUH = 3550;
+// Sensor Calibration - SEKARANG BISA DIUBAH DARI WEB!
+int NILAI_ADC_JERNIH = 9475;
+int NILAI_ADC_KERUH = 3550;
 
 // Timing
 unsigned long lastTimeSuhu = 0;
 unsigned long lastTimeKeruh = 0;
 unsigned long waktuTerakhirKirim = 0;
 const long intervalKirim = 1000; // 1 second for research
+
+// WiFi Monitoring
+unsigned long lastWiFiCheck = 0;
+const long wifiCheckInterval = 30000;
 
 // PWM Configuration
 const int PWM_CHANNEL_HEATER = 0;
@@ -479,42 +497,88 @@ void resetPIDKeruh()
 void setup_wifi()
 {
   delay(10);
-  Serial.println("\n[WiFi] Connecting...");
-  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  Serial.println("\n[WiFi] Starting multi-network connection...");
+  WiFi.mode(WIFI_STA);
+  WiFi.disconnect();
+  delay(100);
 
-  int attempts = 0;
-  while (WiFi.status() != WL_CONNECTED && attempts < 40)
+  // Coba connect ke setiap WiFi yang tersedia
+  for (int network = 0; network < NUM_WIFI_NETWORKS; network++)
   {
-    delay(500);
-    Serial.print(".");
-    attempts++;
+    Serial.printf("\n[WiFi] Trying network %d: %s\n", network + 1, wifiNetworks[network].ssid);
+    WiFi.begin(wifiNetworks[network].ssid, wifiNetworks[network].password);
+
+    int attempts = 0;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) // 20 attempts = 10 detik
+    {
+      delay(500);
+      Serial.print(".");
+      attempts++;
+    }
+
+    if (WiFi.status() == WL_CONNECTED)
+    {
+      Serial.println("\n[WiFi] ✅ Connected!");
+      Serial.printf("[WiFi] Network: %s\n", wifiNetworks[network].ssid);
+      Serial.printf("[WiFi] IP Address: %s\n", WiFi.localIP().toString().c_str());
+      Serial.printf("[WiFi] Signal Strength: %d dBm\n", WiFi.RSSI());
+      return; // Berhasil connect, keluar dari fungsi
+    }
+    else
+    {
+      Serial.printf("\n[WiFi] ❌ Failed to connect to %s\n", wifiNetworks[network].ssid);
+      WiFi.disconnect();
+      delay(1000);
+    }
   }
 
-  if (WiFi.status() == WL_CONNECTED)
-  {
-    Serial.println("\n[WiFi] Connected! IP: " + WiFi.localIP().toString());
-  }
-  else
-  {
-    Serial.println("\n[WiFi] FAILED! Restarting...");
-    ESP.restart();
-  }
+  // Jika semua WiFi gagal
+  Serial.println("\n[WiFi] ⚠️ ALL NETWORKS FAILED!");
+  Serial.println("[WiFi] Restarting ESP32 in 5 seconds...");
+  delay(5000);
+  ESP.restart();
 }
 
 void callback(char *topic, byte *payload, unsigned int length)
 {
-  Serial.println("[DEBUG] ESP32 received MQTT message:");
-  Serial.println((char *)payload);
-  if (strcmp(topic, MQTT_TOPIC_MODE) != 0)
-    return;
+  Serial.println("\n========================================");
+  Serial.println("[MQTT] ✅ Message received!");
+  Serial.print("[MQTT] Topic: ");
+  Serial.println(topic);
+  Serial.print("[MQTT] Payload length: ");
+  Serial.println(length);
+  Serial.print("[MQTT] Payload: ");
 
-  StaticJsonDocument<400> doc;
+  // Print raw payload
+  for (unsigned int i = 0; i < length; i++)
+  {
+    Serial.print((char)payload[i]);
+  }
+  Serial.println();
+
+  if (strcmp(topic, MQTT_TOPIC_MODE) != 0)
+  {
+    Serial.println("[MQTT] ❌ Wrong topic, ignoring...");
+    Serial.println("========================================\n");
+    return;
+  }
+
+  StaticJsonDocument<512> doc; // Tingkatkan dari 400 ke 512
   char payloadStr[length + 1];
   memcpy(payloadStr, payload, length);
   payloadStr[length] = '\0';
 
-  if (deserializeJson(doc, payloadStr))
+  DeserializationError error = deserializeJson(doc, payloadStr);
+
+  if (error)
+  {
+    Serial.print("[MQTT] ❌ JSON Parse Error: ");
+    Serial.println(error.c_str());
+    Serial.println("========================================\n");
     return;
+  }
+
+  Serial.println("[MQTT] ✅ JSON parsed successfully!");
 
   // Control Mode
   if (doc.containsKey("kontrol_aktif"))
@@ -525,38 +589,106 @@ void callback(char *topic, byte *payload, unsigned int length)
       kontrolAktif = FUZZY;
       resetPIDSuhu();
       resetPIDKeruh();
+      Serial.println("[MODE] Changed to: FUZZY");
     }
     else if (mode == "PID")
     {
       kontrolAktif = PID;
+      Serial.println("[MODE] Changed to: PID");
     }
-    Serial.println("[DEBUG] Mode changed to: " + mode);
   }
 
   // Setpoints
   if (doc.containsKey("suhu_setpoint"))
+  {
     suhuSetpoint = doc["suhu_setpoint"];
+    Serial.print("[SETPOINT] Suhu updated: ");
+    Serial.println(suhuSetpoint);
+  }
   if (doc.containsKey("keruh_setpoint"))
+  {
     turbiditySetpoint = doc["keruh_setpoint"];
+    Serial.print("[SETPOINT] Kekeruhan updated: ");
+    Serial.println(turbiditySetpoint);
+  }
 
   // PID Parameters
   if (doc.containsKey("kp_suhu"))
+  {
     Kp_suhu = doc["kp_suhu"];
+    Serial.print("[PID] Kp_suhu updated: ");
+    Serial.println(Kp_suhu);
+  }
   if (doc.containsKey("ki_suhu"))
+  {
     Ki_suhu = doc["ki_suhu"];
+    Serial.print("[PID] Ki_suhu updated: ");
+    Serial.println(Ki_suhu);
+  }
   if (doc.containsKey("kd_suhu"))
+  {
     Kd_suhu = doc["kd_suhu"];
+    Serial.print("[PID] Kd_suhu updated: ");
+    Serial.println(Kd_suhu);
+  }
   if (doc.containsKey("kp_keruh"))
+  {
     Kp_keruh = doc["kp_keruh"];
+    Serial.print("[PID] Kp_keruh updated: ");
+    Serial.println(Kp_keruh);
+  }
   if (doc.containsKey("ki_keruh"))
+  {
     Ki_keruh = doc["ki_keruh"];
+    Serial.print("[PID] Ki_keruh updated: ");
+    Serial.println(Ki_keruh);
+  }
   if (doc.containsKey("kd_keruh"))
+  {
     Kd_keruh = doc["kd_keruh"];
+    Serial.print("[PID] Kd_keruh updated: ");
+    Serial.println(Kd_keruh);
+  }
 
-  Serial.println("[DEBUG] ESP32 finished processing MQTT message");
-  Serial.println("[DEBUG] Suhu setpoint updated: " + String(suhuSetpoint));
-  Serial.println("[DEBUG] Keruh setpoint updated: " + String(turbiditySetpoint));
-  Serial.println("[DEBUG] After update: kontrolAktif = " + String(kontrolAktif));
+  // ========== KALIBRASI ADC - PERBAIKAN DI SINI ==========
+  bool adcUpdated = false;
+
+  if (doc.containsKey("adc_jernih"))
+  {
+    int newValue = doc["adc_jernih"];
+    Serial.print("[CALIBRATION] ADC Jernih - Old: ");
+    Serial.print(NILAI_ADC_JERNIH);
+    Serial.print(" → New: ");
+    Serial.println(newValue);
+
+    NILAI_ADC_JERNIH = newValue;
+    adcUpdated = true;
+  }
+
+  if (doc.containsKey("adc_keruh"))
+  {
+    int newValue = doc["adc_keruh"];
+    Serial.print("[CALIBRATION] ADC Keruh - Old: ");
+    Serial.print(NILAI_ADC_KERUH);
+    Serial.print(" → New: ");
+    Serial.println(newValue);
+
+    NILAI_ADC_KERUH = newValue;
+    adcUpdated = true;
+  }
+
+  if (adcUpdated)
+  {
+    Serial.println("[CALIBRATION] ✅ ADC values updated successfully!");
+    Serial.print("[CALIBRATION] Current values - Jernih: ");
+    Serial.print(NILAI_ADC_JERNIH);
+    Serial.print(", Keruh: ");
+    Serial.println(NILAI_ADC_KERUH);
+  }
+  // =======================================================
+
+  Serial.println("[MQTT] ✅ All updates completed!");
+  Serial.println("========================================\n");
 }
 
 bool reconnect_mqtt()
@@ -618,7 +750,7 @@ float konversiTurbidityKePersen(int adcValue)
 //                MQTT PUBLISH
 // =========================================================================
 void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh,
-                   float errSuhu, float errKeruh)
+                   float errSuhu, float errKeruh, int turbADC)
 {
   StaticJsonDocument<512> doc;
 
@@ -626,6 +758,7 @@ void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh
   doc["timestamp_ms"] = millis();
   doc["suhu"] = round(suhu * 100) / 100.0;
   doc["turbidity_persen"] = round(turbPersen * 100) / 100.0;
+  doc["turbidity_adc"] = turbADC;
   doc["kontrol_aktif"] = (kontrolAktif == FUZZY) ? "Fuzzy" : "PID";
   doc["pwm_heater"] = round(pwmSuhu * 100) / 100.0;
   doc["pwm_pompa"] = round(pwmKeruh * 100) / 100.0;
@@ -678,54 +811,83 @@ void setup()
   Serial.println("=== System Ready for Research ===\n");
 }
 
-// =========================================================================
-//                MAIN LOOP
-// =========================================================================
-void loop()
-{
-  if (!mqttClient.connected())
+  // =========================================================================
+  //          FUNGSI WiFi MONITORING (Tambahkan sebelum loop)
+  // =========================================================================
+  void checkWiFiConnection()
   {
-    reconnect_mqtt();
-  }
-  mqttClient.loop();
-
-  unsigned long now = millis();
-
-  // Data Collection Loop
-  if (now - waktuTerakhirKirim >= intervalKirim)
-  {
-    waktuTerakhirKirim = now;
-
-    // Read Sensors
-    float suhuAktual = bacaSuhuDS18B20();
-    int turbidityADC = bacaTurbidity();
-    float turbidityPersen = konversiTurbidityKePersen(turbidityADC);
-
-    // Calculate Errors
-    float errorSuhu = suhuSetpoint - suhuAktual;
-    float errorKeruh = turbidityPersen - turbiditySetpoint;
-
-    // Control Outputs
-    double dayaOutputSuhu = (kontrolAktif == FUZZY) ? hitungFuzzySuhu(errorSuhu) : hitungPIDSuhu(errorSuhu);
-    double dayaOutputKeruh = (kontrolAktif == FUZZY) ? hitungFuzzyKeruh(errorKeruh) : hitungPIDKeruh(errorKeruh);
-
-    int pwmSuhu = constrain((int)(dayaOutputSuhu * 2.55), 0, 255);
-    int pwmKeruh = constrain((int)(dayaOutputKeruh * 2.55), 0, 255);
-
-    // Control L298N Motors
-    setHeaterSpeed(pwmSuhu);
-    setPumpSpeed(pwmKeruh);
-
-    // Send Data
-    if (mqttClient.connected())
+    if (WiFi.status() != WL_CONNECTED)
     {
-      kirimDataMQTT(suhuAktual, turbidityPersen, dayaOutputSuhu, dayaOutputKeruh,
-                    errorSuhu, errorKeruh);
+      Serial.println("\n[WiFi] ⚠️ Connection lost! Attempting to reconnect...");
+      setup_wifi();
+
+      // Jika berhasil reconnect, reconnect juga MQTT
+      if (WiFi.status() == WL_CONNECTED && !mqttClient.connected())
+      {
+        Serial.println("[MQTT] Reconnecting after WiFi restoration...");
+        reconnect_mqtt();
+      }
+    }
+  }
+  // =========================================================================
+  //                MAIN LOOP
+  // =========================================================================
+  void loop()
+  {
+    unsigned long now = millis();
+
+    // ========== WiFi Connection Monitor (Check every 30 seconds) ==========
+    if (now - lastWiFiCheck >= wifiCheckInterval)
+    {
+      lastWiFiCheck = now;
+      checkWiFiConnection();
     }
 
-    // Debug Print
-    Serial.printf("[%lu] T:%.2f/%.1f E:%.2f PWM:%d | K:%.1f/%.1f E:%.1f PWM:%d\n",
-                  millis() / 1000, suhuAktual, suhuSetpoint, errorSuhu, pwmSuhu,
-                  turbidityPersen, turbiditySetpoint, errorKeruh, pwmKeruh);
+    // ========== MQTT Connection ==========
+    if (!mqttClient.connected())
+    {
+      reconnect_mqtt();
+    }
+    mqttClient.loop();
+
+    // Data Collection Loop
+    if (now - waktuTerakhirKirim >= intervalKirim)
+    {
+      waktuTerakhirKirim = now;
+
+      // Read Sensors
+      float suhuAktual = bacaSuhuDS18B20();
+      int turbidityADC = bacaTurbidity();
+      float turbidityPersen = konversiTurbidityKePersen(turbidityADC);
+
+      // Calculate Errors
+      float errorSuhu = suhuSetpoint - suhuAktual;
+      float errorKeruh = turbidityPersen - turbiditySetpoint;
+
+      // Control Outputs
+      double dayaOutputSuhu = (kontrolAktif == FUZZY) ? hitungFuzzySuhu(errorSuhu) : hitungPIDSuhu(errorSuhu);
+      double dayaOutputKeruh = (kontrolAktif == FUZZY) ? hitungFuzzyKeruh(errorKeruh) : hitungPIDKeruh(errorKeruh);
+
+      int pwmSuhu = constrain((int)(dayaOutputSuhu * 2.55), 0, 255);
+      int pwmKeruh = constrain((int)(dayaOutputKeruh * 2.55), 0, 255);
+
+      // Control L298N Motors
+      setHeaterSpeed(pwmSuhu);
+      setPumpSpeed(pwmKeruh);
+
+      // Send Data
+      if (mqttClient.connected())
+      {
+        kirimDataMQTT(suhuAktual, turbidityPersen, dayaOutputSuhu, dayaOutputKeruh,
+                      errorSuhu, errorKeruh, turbidityADC);
+      }
+
+      // Debug Print
+      Serial.printf("[%lu] T:%.2f/%.1f E:%.2f PWM:%d | K:%.1f/%.1f E:%.1f PWM:%d | ADC:%d (J:%d K:%d) | WiFi:%s\n",
+                    millis() / 1000,
+                    suhuAktual, suhuSetpoint, errorSuhu, pwmSuhu,
+                    turbidityPersen, turbiditySetpoint, errorKeruh, pwmKeruh,
+                    turbidityADC, NILAI_ADC_JERNIH, NILAI_ADC_KERUH, // TAMPILKAN ADC live
+                    WiFi.status() == WL_CONNECTED ? "OK" : "LOST");
+    }
   }
-}
