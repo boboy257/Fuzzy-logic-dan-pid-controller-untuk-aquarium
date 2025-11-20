@@ -188,7 +188,7 @@ function initCharts() {
         scales: {
           y: { 
             min: 20, 
-            max: 40,
+            max: 34,
             grid: { color: 'rgba(0, 0, 0, 0.05)' }, 
             title: { 
               display: true, 
