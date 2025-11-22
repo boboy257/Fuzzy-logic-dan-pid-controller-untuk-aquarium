@@ -843,9 +843,23 @@ void setup()
   resetPIDKeruh();
 
   setup_wifi();
+  mqttClient.setBufferSize(512); //size data 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(callback);
   mqttClient.setKeepAlive(60);
+
+  // Paksa connect MQTT Sekarang
+  Serial.println("[Setup] Connecting to MQTT...");
+  if (reconnect_mqtt())
+  {
+    Serial.println("[Setup] MQTT Connected & Subscribed!");
+    // Beri waktu sebentar untuk menerima pesan retain
+    for (int i = 0; i < 10; i++)
+    {
+      mqttClient.loop();
+      delay(50);
+    }
+  }
 
   Serial.println("=== System Ready for Research ===\n");
 }
@@ -916,11 +930,16 @@ void setup()
       }
 
       // Debug Print
-      Serial.printf("[%lu] T:%.2f/%.1f E:%.2f PWM:%d | K:%.1f/%.1f E:%.1f PWM:%d | ADC:%d (J:%d K:%d) | WiFi:%s\n",
+      Serial.printf("[%lu] [%s] T:%.2f/%.1f [%.1f/%.1f/%.1f] E:%.2f PWM:%-3d | K:%.1f/%.1f [%.1f/%.1f/%.1f] E:%.1f PWM:%-3d | ADC:%d (J:%d K:%d) | WiFi:%s\n",
                     millis() / 1000,
-                    suhuAktual, suhuSetpoint, errorSuhu, pwmSuhu,
-                    turbidityPersen, turbiditySetpoint, errorKeruh, pwmKeruh,
-                    turbidityADC, NILAI_ADC_JERNIH, NILAI_ADC_KERUH, // TAMPILKAN ADC live
+                    (kontrolAktif == FUZZY) ? "FUZZY" : "PID  ", // 1. Tampilkan Mode
+                    suhuAktual, suhuSetpoint,
+                    Kp_suhu, Ki_suhu, Kd_suhu, // 2. Tampilkan PID Suhu
+                    errorSuhu, pwmSuhu,
+                    turbidityPersen, turbiditySetpoint,
+                    Kp_keruh, Ki_keruh, Kd_keruh, // 3. Tampilkan PID Keruh
+                    errorKeruh, pwmKeruh,
+                    turbidityADC, NILAI_ADC_JERNIH, NILAI_ADC_KERUH, // 4. DATA ADC DIKEMBALIKAN
                     WiFi.status() == WL_CONNECTED ? "OK" : "LOST");
     }
   }
