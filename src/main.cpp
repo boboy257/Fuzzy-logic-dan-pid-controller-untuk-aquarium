@@ -39,8 +39,8 @@ const int HEATER_ENA = 16; // Enable A (PWM)
 const int HEATER_IN1 = 17; // Input 1
 const int HEATER_IN2 = 18; // Input 2
 
-// L298N Motor B - Diaphragm Pump 12V DC
-const int PUMP_ENB = 19; // Enable B (PWM)
+// L298N Motor B - mini Pump 12V DC
+const int PUMP_ENB = 27; // Enable B (PWM)
 const int PUMP_IN3 = 25; // Input 3
 const int PUMP_IN4 = 26; // Input 4
 
@@ -396,8 +396,8 @@ float hitungFuzzyKeruh(float errorKeruh)
 
   // Output PWM% yang lebih agresif:
   float numerator = (mu_sangatJernih * 0.0f) +
-                    (mu_jernih * 10.0f) +
-                    (mu_sesuai * 30.0f) +
+                    (mu_jernih * 20.0f) +
+                    (mu_sesuai * 45.0f) +
                     (mu_keruh * 70.0f) +      // PENINGKATAN dari 60% ke 70%
                     (mu_sangatKeruh * 95.0f); // PENINGKATAN dari 85% ke 95%
 
@@ -405,7 +405,7 @@ float hitungFuzzyKeruh(float errorKeruh)
 
   if (denominator < 0.01f)
   {
-    return 30.0f;
+    return 45.0f;
   }
 
   return numerator / denominator;
@@ -770,11 +770,30 @@ float bacaSuhuDS18B20()
 
 int bacaTurbidity()
 {
-  int16_t adcValue = ads.readADC_SingleEnded(0);
-  if (adcValue < 0 || adcValue > 32767)
-    return turbidityTerakhir;
-  turbidityTerakhir = adcValue;
-  return adcValue;
+  long totalADC = 0;
+  int jumlahSampel = 20; // Ambil 20 sampel data
+
+  for (int i = 0; i < jumlahSampel; i++)
+  {
+    int16_t val = ads.readADC_SingleEnded(0);
+
+    // Safety check per sampel
+    if (val < 0)
+      val = 0;
+    if (val > 32767)
+      val = 32767;
+
+    totalADC += val;
+    delay(2); // Jeda dikit biar ADC nafas (total delay cuma 40ms)
+  }
+
+  // Hitung rata-rata
+  int rataRata = totalADC / jumlahSampel;
+
+  // Simpan ke variabel global
+  turbidityTerakhir = rataRata;
+
+  return rataRata;
 }
 
 float konversiTurbidityKePersen(int adcValue)
