@@ -5,6 +5,7 @@
 #include <DallasTemperature.h>
 #include <Wire.h>
 #include <Adafruit_ADS1X15.h>
+#include <esp_arduino_version.h>
 
 // =========================================================================
 //                  CONFIGURATION
@@ -89,6 +90,10 @@ const int PWM_CHANNEL_PUMP = 1;
 const int PWM_FREQ = 5000;
 const int PWM_RESOLUTION = 8;
 
+// Tuning Fisik Pompa (Anti-Stiction & Maintenance Flow)
+const int PWM_MIN_FISIK = 180; // Batas minimal tenaga agar pompa 5W berputar
+const int PWM_START_LOGIKA = 5;
+
 // Global Objects
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
@@ -115,65 +120,82 @@ float mapFloat(float x, float in_min, float in_max, float out_min, float out_max
 
 void setHeaterSpeed(int pwmValue)
 {
-  // Constrain PWM value
   pwmValue = constrain(pwmValue, 0, 255);
 
-  if (pwmValue == 0)
+  if (pwmValue > 0)
   {
-    // Motor OFF
-    digitalWrite(HEATER_IN1, LOW);
+    digitalWrite(HEATER_IN1, HIGH);
     digitalWrite(HEATER_IN2, LOW);
-    ledcWrite(PWM_CHANNEL_HEATER, 0);
   }
   else
   {
-    // Motor ON - Forward direction
-    digitalWrite(HEATER_IN1, HIGH);
+    digitalWrite(HEATER_IN1, LOW);
     digitalWrite(HEATER_IN2, LOW);
-    ledcWrite(PWM_CHANNEL_HEATER, pwmValue);
   }
+
+// Support ESP32 Core v2.x and v3.x
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  ledcWrite(HEATER_ENA, pwmValue);
+#else
+  ledcWrite(PWM_CHANNEL_HEATER, pwmValue);
+#endif
 }
 
 void setPumpSpeed(int pwmValue)
 {
-  // Constrain PWM value
   pwmValue = constrain(pwmValue, 0, 255);
+  int finalOutput = 0;
 
-  if (pwmValue == 0)
+  if (pwmValue < PWM_START_LOGIKA)
   {
-    // Motor OFF
-    digitalWrite(PUMP_IN3, LOW);
-    digitalWrite(PUMP_IN4, LOW);
-    ledcWrite(PWM_CHANNEL_PUMP, 0);
+    finalOutput = 0;
   }
   else
   {
-    // Motor ON - Forward direction
+    // Mapping dari Range Logika (5-255) ke Range Fisik (180-255)
+    finalOutput = map(pwmValue, PWM_START_LOGIKA, 255, PWM_MIN_FISIK, 255);
+  }
+
+  if (finalOutput > 0)
+  {
     digitalWrite(PUMP_IN3, HIGH);
     digitalWrite(PUMP_IN4, LOW);
-    ledcWrite(PWM_CHANNEL_PUMP, pwmValue);
   }
+  else
+  {
+    digitalWrite(PUMP_IN3, LOW);
+    digitalWrite(PUMP_IN4, LOW);
+  }
+
+// Support ESP32 Core v2.x and v3.x
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  ledcWrite(PUMP_ENB, finalOutput);
+#else
+  ledcWrite(PWM_CHANNEL_PUMP, finalOutput);
+#endif
 }
 
 void setupL298N()
 {
-  // Setup Heater pins (Motor A)
   pinMode(HEATER_IN1, OUTPUT);
   pinMode(HEATER_IN2, OUTPUT);
-  ledcSetup(PWM_CHANNEL_HEATER, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(HEATER_ENA, PWM_CHANNEL_HEATER);
-
-  // Setup Pump pins (Motor B)
   pinMode(PUMP_IN3, OUTPUT);
   pinMode(PUMP_IN4, OUTPUT);
+
+// KONFIGURASI PWM UNIVERSAL
+#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+  ledcAttach(HEATER_ENA, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttach(PUMP_ENB, PWM_FREQ, PWM_RESOLUTION);
+#else
+  ledcSetup(PWM_CHANNEL_HEATER, PWM_FREQ, PWM_RESOLUTION);
+  ledcAttachPin(HEATER_ENA, PWM_CHANNEL_HEATER);
   ledcSetup(PWM_CHANNEL_PUMP, PWM_FREQ, PWM_RESOLUTION);
   ledcAttachPin(PUMP_ENB, PWM_CHANNEL_PUMP);
+#endif
 
-  // Initialize both motors to OFF
   setHeaterSpeed(0);
   setPumpSpeed(0);
-
-  Serial.println("[OK] L298N driver initialized");
+  Serial.println("[OK] L298N driver initialized (Universal Fix + Remapping)");
 }
 
 // =========================================================================
