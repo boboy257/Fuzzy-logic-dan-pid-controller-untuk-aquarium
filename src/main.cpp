@@ -1,3 +1,12 @@
+/**
+ * SISTEM KENDALI HYBRID (FUZZY & PID) 
+ * * Deskripsi:
+ * Kode ini membandingkan kinerja kontrol Fuzzy Logic vs PID Adaptif (Gain Scheduling).
+ * - Fuzzy: Menggunakan metode Sugeno (5 membership function).
+ * - PID: Menggunakan fitur Gain Scheduling (respon cepat) + Feedforward (anti-stuck).
+ * * Hardware: ESP32, DS18B20, Sensor Turbidity (ADS1115), L298N Driver.
+ */
+
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <ArduinoJson.h>
@@ -8,519 +17,316 @@
 #include <esp_arduino_version.h>
 
 // =========================================================================
-//                  CONFIGURATION
+//                  SETTING JARINGAN & MQTT
 // =========================================================================
-// WiFi Configuration - Support Multiple Networks
-struct WiFiCredentials
-{
+
+struct WiFiCredentials {
   const char *ssid;
   const char *password;
 };
 
-// Definisikan Multiple WiFi (WiFi pertama akan dicoba terlebih dahulu)
 WiFiCredentials wifiNetworks[] = {
-    {"Private u52", "12345678"},     // WiFi Utama
-    {"iPhone 2", "bobo2002"} // WiFi Cadangan (ganti sesuai kebutuhan)
-    // Tambahkan WiFi lain jika diperlukan:
+    {"Private u52", "12345678"}, 
+    {"iPhone 2", "bobo2002"}    
 };
 const int NUM_WIFI_NETWORKS = sizeof(wifiNetworks) / sizeof(wifiNetworks[0]);
 
-//MQTT Configuration
 const char *MQTT_BROKER = "broker.hivemq.com";
 const int MQTT_PORT = 1883;
 const char *MQTT_TOPIC_DATA = "unhas/informatika/aquarium/data";
 const char *MQTT_TOPIC_MODE = "unhas/informatika/aquarium/mode";
 const char *MQTT_CLIENT_ID = "esp32-research-aquarium";
 
-// Pin Configuration untuk L298N
+// =========================================================================
+//                  PIN & VARIABEL GLOBAL
+// =========================================================================
+
 const int SENSOR_SUHU_PIN = 4;
 
-// L298N Motor A - PTC Heater 12V DC
-const int HEATER_ENA = 16; // Enable A (PWM)
-const int HEATER_IN1 = 17; // Input 1
-const int HEATER_IN2 = 18; // Input 2
+// Driver L298N (Pemanas & Pompa)
+const int HEATER_ENA = 16; const int HEATER_IN1 = 17; const int HEATER_IN2 = 18;
+const int PUMP_ENB = 27;   const int PUMP_IN3 = 25;   const int PUMP_IN4 = 26;
 
-// L298N Motor B - mini Pump 12V DC
-const int PUMP_ENB = 27; // Enable B (PWM)
-const int PUMP_IN3 = 25; // Input 3
-const int PUMP_IN4 = 26; // Input 4
-
-// Control Modes
-enum ControlMode
-{
-  FUZZY,
-  PID
-};
+// Mode Kontrol
+enum ControlMode { FUZZY, PID };
 ControlMode kontrolAktif = FUZZY;
 
+// Setpoint default
 float suhuSetpoint = 28.0f;
-float turbiditySetpoint = 10.0f;
+float turbiditySetpoint = 15.0f;
 
-// PID Parameters - Temperature
-double Kp_suhu = 8.0;
-double Ki_suhu = 0.3;
-double Kd_suhu = 6.0;
-double integralSumSuhu = 0.0;
-double lastErrorSuhu = 0.0;
+// Parameter PID (Default Tuning - Mode Smooth)
+double Kp_suhu = 8.0, Ki_suhu = 0.3, Kd_suhu = 6.0;
+double Kp_keruh = 5.0, Ki_keruh = 0.2, Kd_keruh = 2.0; 
 
-// PID Parameters - Turbidity
-double Kp_keruh = 5.0;
-double Ki_keruh = 0.2;
-double Kd_keruh = 2.0;
-double integralSumKeruh = 0.0;
-double lastErrorKeruh = 0.0;
+// Variabel penyimpan nilai integral & error sebelumnya
+double integralSumSuhu = 0.0, lastErrorSuhu = 0.0;
+double integralSumKeruh = 0.0, lastErrorKeruh = 0.0;
 
-// Sensor Calibration - Tubidity
-int NILAI_ADC_JERNIH = 9475;
+// Kalibrasi ADC Turbidity (Nilai Default)
+int NILAI_ADC_JERNIH = 20100;
 int NILAI_ADC_KERUH = 3550;
 
-// Timing
+// Timer
 unsigned long lastTimeSuhu = 0;
 unsigned long lastTimeKeruh = 0;
 unsigned long waktuTerakhirKirim = 0;
-const long intervalKirim = 1000; // 1 second for research
-
-// WiFi Monitoring
+const long intervalKirim = 1000;      
 unsigned long lastWiFiCheck = 0;
-const long wifiCheckInterval = 5000;
 
-// PWM Configuration
-const int PWM_CHANNEL_HEATER = 0;
-const int PWM_CHANNEL_PUMP = 1;
-const int PWM_FREQ = 5000;
+// variabel wifiCheckInterval 
+const long wifiCheckInterval = 5000; 
+
+// Setting PWM
+const int PWM_FREQ = 1000;
 const int PWM_RESOLUTION = 8;
-
-// Tuning Fisik Pompa (Anti-Stiction & Maintenance Flow)
-const int PWM_MIN_FISIK = 180; // Batas minimal tenaga agar pompa 5W berputar
+const int PWM_MIN_FISIK = 180;   
 const int PWM_START_LOGIKA = 5;
 
-// Global Objects
+// Objek Sensor & Komunikasi
 WiFiClient espClient;
 PubSubClient mqttClient(espClient);
 OneWire oneWire(SENSOR_SUHU_PIN);
 DallasTemperature sensors(&oneWire);
 Adafruit_ADS1115 ads;
 
-// Last Known Values
-float suhuTerakhir = 25.0f;
-int turbidityTerakhir = 0;
-
+// Variabel Filter Sensor & Last Values
 float suhuTerfilter = 0.0;
-const float ALPHA = 0.2;
+const float ALPHA = 0.2; 
 
-// [BARU] Fungsi Helper untuk konversi desimal yang presisi
-float mapFloat(float x, float in_min, float in_max, float out_min, float out_max)
-{
+// variabel suhuTerakhir & turbidityTerakhir
+float suhuTerakhir = 25.0f;
+int turbidityTerakhir = 0; 
+
+// =========================================================================
+//                  FUNGSI BANTUAN (HELPER)
+// =========================================================================
+
+float mapFloat(float x, float in_min, float in_max, float out_min, float out_max) {
   return (x - in_min) * (out_max - out_min) / (in_max - in_min) + out_min;
 }
 
 // =========================================================================
-//          L298N MOTOR CONTROL FUNCTIONS
+//                  KONTROL MOTOR L298N
 // =========================================================================
 
-void setHeaterSpeed(int pwmValue)
-{
+void setHeaterSpeed(int pwmValue) {
   pwmValue = constrain(pwmValue, 0, 255);
-
-  if (pwmValue > 0)
-  {
-    digitalWrite(HEATER_IN1, HIGH);
-    digitalWrite(HEATER_IN2, LOW);
+  if (pwmValue > 0) {
+    digitalWrite(HEATER_IN1, HIGH); digitalWrite(HEATER_IN2, LOW);
+  } else {
+    digitalWrite(HEATER_IN1, LOW); digitalWrite(HEATER_IN2, LOW);
   }
-  else
-  {
-    digitalWrite(HEATER_IN1, LOW);
-    digitalWrite(HEATER_IN2, LOW);
-  }
-
-// Support ESP32 Core v2.x and v3.x
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcWrite(HEATER_ENA, pwmValue);
-#else
-  ledcWrite(PWM_CHANNEL_HEATER, pwmValue);
-#endif
+  
+  #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    ledcWrite(HEATER_ENA, pwmValue);
+  #else
+    ledcWrite(0, pwmValue); 
+  #endif
 }
 
-void setPumpSpeed(int pwmValue)
-{
+void setPumpSpeed(int pwmValue) {
   pwmValue = constrain(pwmValue, 0, 255);
   int finalOutput = 0;
 
-  if (pwmValue < PWM_START_LOGIKA)
-  {
+  if (pwmValue < PWM_START_LOGIKA) {
     finalOutput = 0;
-  }
-  else
-  {
-    // Mapping dari Range Logika (5-255) ke Range Fisik (180-255)
+  } else {
     finalOutput = map(pwmValue, PWM_START_LOGIKA, 255, PWM_MIN_FISIK, 255);
   }
 
-  if (finalOutput > 0)
-  {
-    digitalWrite(PUMP_IN3, HIGH);
-    digitalWrite(PUMP_IN4, LOW);
-  }
-  else
-  {
-    digitalWrite(PUMP_IN3, LOW);
-    digitalWrite(PUMP_IN4, LOW);
+  if (finalOutput > 0) {
+    digitalWrite(PUMP_IN3, HIGH); digitalWrite(PUMP_IN4, LOW);
+  } else {
+    digitalWrite(PUMP_IN3, LOW); digitalWrite(PUMP_IN4, LOW);
   }
 
-// Support ESP32 Core v2.x and v3.x
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcWrite(PUMP_ENB, finalOutput);
-#else
-  ledcWrite(PWM_CHANNEL_PUMP, finalOutput);
-#endif
+  #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    ledcWrite(PUMP_ENB, finalOutput);
+  #else
+    ledcWrite(1, finalOutput); 
+  #endif
 }
 
-void setupL298N()
-{
-  pinMode(HEATER_IN1, OUTPUT);
-  pinMode(HEATER_IN2, OUTPUT);
-  pinMode(PUMP_IN3, OUTPUT);
-  pinMode(PUMP_IN4, OUTPUT);
+void setupL298N() {
+  pinMode(HEATER_IN1, OUTPUT); pinMode(HEATER_IN2, OUTPUT);
+  pinMode(PUMP_IN3, OUTPUT); pinMode(PUMP_IN4, OUTPUT);
 
-// KONFIGURASI PWM UNIVERSAL
-#if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
-  ledcAttach(HEATER_ENA, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttach(PUMP_ENB, PWM_FREQ, PWM_RESOLUTION);
-#else
-  ledcSetup(PWM_CHANNEL_HEATER, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(HEATER_ENA, PWM_CHANNEL_HEATER);
-  ledcSetup(PWM_CHANNEL_PUMP, PWM_FREQ, PWM_RESOLUTION);
-  ledcAttachPin(PUMP_ENB, PWM_CHANNEL_PUMP);
-#endif
-
-  setHeaterSpeed(0);
-  setPumpSpeed(0);
-  Serial.println("[OK] L298N driver initialized (Universal Fix + Remapping)");
+  #if ESP_ARDUINO_VERSION >= ESP_ARDUINO_VERSION_VAL(3, 0, 0)
+    ledcAttach(HEATER_ENA, PWM_FREQ, PWM_RESOLUTION);
+    ledcAttach(PUMP_ENB, PWM_FREQ, PWM_RESOLUTION);
+  #else
+    ledcSetup(0, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(HEATER_ENA, 0);
+    ledcSetup(1, PWM_FREQ, PWM_RESOLUTION); ledcAttachPin(PUMP_ENB, 1);
+  #endif
 }
 
 // =========================================================================
-//          OPTIMIZED FUZZY LOGIC - TEMPERATURE (5 MEMBERSHIP FUNCTIONS)
+//                  LOGIKA FUZZY (SUGENO)
 // =========================================================================
-// Dirancang untuk respons cepat dengan stabilitas tinggi
-// Asumsi: setpoint dinamis (misal 33.5°C), error = setpoint - suhuAktual
 
-// 1. SANGAT DINGIN - Butuh pemanasan maksimum
-// Aktif: error > 3.5 (suhuAktual < setpoint - 3.5)
-// Puncak: error >= 5.0
-float membershipSangatDingin(float error)
-{
-  if (error <= 3.5f)
-    return 0.0f;
-  if (error >= 5.0f)
-    return 1.0f;
-  return (error - 3.5f) / 1.5f; // Naik cepat dari 3.5 ke 5.0
+// --- Fuzzy Suhu ---
+float membershipSangatDingin(float error) {
+  if (error <= 3.5f) return 0.0f;
+  if (error >= 5.0f) return 1.0f;
+  return (error - 3.5f) / 1.5f;
 }
-
-// 2. DINGIN - Butuh pemanasan tinggi
-// Aktif: 1.5 < error < 4.5
-// Puncak: 2.5 <= error <= 3.5 (ZONA KRITIS untuk kasus Anda!)
-float membershipDingin(float error)
-{
-  if (error <= 1.5f || error >= 4.5f)
-    return 0.0f;
-  if (error >= 2.5f && error <= 3.5f)
-    return 1.0f; // Puncak di zona error Anda
-  if (error > 1.5f && error < 2.5f)
-    return (error - 1.5f) / 1.0f;
-  if (error > 3.5f && error < 4.5f)
-    return (4.5f - error) / 1.0f;
-  return 0.0f;
+float membershipDingin(float error) {
+  if (error <= 1.5f || error >= 4.5f) return 0.0f;
+  if (error >= 2.5f && error <= 3.5f) return 1.0f;
+  if (error > 1.5f && error < 2.5f) return (error - 1.5f) / 1.0f;
+  return (4.5f - error) / 1.0f; 
 }
-
-// 3. SESUAI - Zona setpoint
-// PILIHAN A: Puncak ±0.3°C (Agresif, respons cepat)
-// PILIHAN B: Puncak ±0.5°C (Seimbang, lebih stabil)
-// Anda bisa pilih salah satu sesuai kebutuhan
-
-// PILIHAN A: Puncak Sempit ±0.3°C (DIREKOMENDASIKAN untuk kasus Anda)
-// Aktif: -1.0 < error < 2.0
-// Puncak: -0.3 <= error <= 0.3
-float membershipSesuai(float error)
-{
-  if (error <= -1.0f || error >= 2.0f)
-    return 0.0f;
-  if (error >= -0.3f && error <= 0.3f)
-    return 1.0f; // Zona stabil sangat sempit, sistem akan berusaha keras stay di sini
-  if (error > -1.0f && error < -0.3f)
-    return (error + 1.0f) / 0.7f;
-  if (error > 0.3f && error < 2.0f)
-    return (2.0f - error) / 1.7f;
-  return 0.0f;
+float membershipSesuai(float error) { 
+  if (error <= -1.0f || error >= 2.0f) return 0.0f;
+  if (error >= -0.3f && error <= 0.3f) return 1.0f;
+  if (error > -1.0f && error < -0.3f) return (error + 1.0f) / 0.7f;
+  return (2.0f - error) / 1.7f;
 }
-
-/* PILIHAN B: Jika ingin lebih konservatif, gunakan ini:
-// Aktif: -1.2 < error < 2.0
-// Puncak: -0.5 <= error <= 0.5
-float membershipSesuai(float error)
-{
-  if (error <= -1.2f || error >= 2.0f)
-    return 0.0f;
-  if (error >= -0.5f && error <= 0.5f)
-    return 1.0f; // Zona stabil lebih lebar
-  if (error > -1.2f && error < -0.5f)
-    return (error + 1.2f) / 0.7f;
-  if (error > 0.5f && error < 2.0f)
-    return (2.0f - error) / 1.5f;
-  return 0.0f;
+float membershipPanas(float error) {
+  if (error <= -3.5f || error >= -0.5f) return 0.0f;
+  if (error >= -2.5f && error <= -1.0f) return 1.0f;
+  if (error > -3.5f && error < -2.5f) return (error + 3.5f) / 1.0f;
+  return (-0.5f - error) / 0.5f;
 }
-*/
-
-// 4. PANAS - Mulai kurangi pemanasan
-// Aktif: -3.5 < error < -0.5
-// Puncak: -2.5 <= error <= -1.0
-float membershipPanas(float error)
-{
-  if (error <= -3.5f || error >= -0.5f)
-    return 0.0f;
-  if (error >= -2.5f && error <= -1.0f)
-    return 1.0f;
-  if (error > -3.5f && error < -2.5f)
-    return (error + 3.5f) / 1.0f;
-  if (error > -1.0f && error < -0.5f)
-    return (-0.5f - error) / 0.5f;
-  return 0.0f;
-}
-
-// 5. SANGAT PANAS - Matikan heater
-// Aktif: error < -3.0 (suhuAktual > setpoint + 3.0)
-// Puncak: error <= -4.5
-float membershipSangatPanas(float error)
-{
-  if (error >= -3.0f)
-    return 0.0f;
-  if (error <= -4.5f)
-    return 1.0f;
+float membershipSangatPanas(float error) {
+  if (error >= -3.0f) return 0.0f;
+  if (error <= -4.5f) return 1.0f;
   return (-3.0f - error) / 1.5f;
 }
 
-// DEFUZZIFIKASI - Output yang lebih agresif untuk pemanasan
-float hitungFuzzySuhu(float errorSuhu)
-{
+float hitungFuzzySuhu(float errorSuhu) {
   float mu_sangatDingin = membershipSangatDingin(errorSuhu);
   float mu_dingin = membershipDingin(errorSuhu);
   float mu_sesuai = membershipSesuai(errorSuhu);
   float mu_panas = membershipPanas(errorSuhu);
   float mu_sangatPanas = membershipSangatPanas(errorSuhu);
 
-  // Output PWM% yang lebih agresif:
-  // - Sangat Dingin: 95% (maksimum penuh)
-  // - Dingin: 75% (tinggi untuk kasus Anda dengan error 3.5)
-  // - Sesuai: 25% (maintenance level, tetap menjaga suhu)
-  // - Panas: 5% (minimal, hampir mati)
-  // - Sangat Panas: 0% (mati total)
-
-  float numerator = (mu_sangatDingin * 95.0f) +
-                    (mu_dingin * 75.0f) + // PENINGKATAN dari 60% ke 75%
-                    (mu_sesuai * 25.0f) +
-                    (mu_panas * 5.0f) +
-                    (mu_sangatPanas * 0.0f);
-
+  float numerator = (mu_sangatDingin * 95.0f) + (mu_dingin * 75.0f) + 
+                    (mu_sesuai * 25.0f) + (mu_panas * 5.0f) + (mu_sangatPanas * 0.0f);
   float denominator = mu_sangatDingin + mu_dingin + mu_sesuai + mu_panas + mu_sangatPanas;
 
-  if (denominator < 0.01f)
-  {
-    return 25.0f; // Maintenance level default
-  }
-
+  if (denominator < 0.01f) return 25.0f; 
   return numerator / denominator;
 }
 
-// =========================================================================
-//          OPTIMIZED FUZZY LOGIC - TURBIDITY (5 MEMBERSHIP FUNCTIONS)
-// =========================================================================
-// Mengikuti pola yang sama dengan peningkatan agresivitas
-
-// 1. SANGAT JERNIH - Air terlalu bersih, pompa bisa dikurangi
-// Aktif: error <= -5.0 (turbidityPersen <= 5%)
-// Puncak: error <= -7.0
-float membershipSangatJernih(float error)
-{
-  if (error <= -7.0f)
-    return 1.0f;
-  if (error <= -5.0f)
-    return (-5.0f - error) / 2.0f;
+// --- Fuzzy Turbidity ---
+float membershipSangatJernih(float error) {
+  if (error <= -7.0f) return 1.0f;
+  if (error <= -5.0f) return (-5.0f - error) / 2.0f;
   return 0.0f;
 }
-
-// 2. JERNIH - Air bersih, pompa minimal
-// Aktif: -7.0 < error < -1.0
-// Puncak: -4.0 <= error <= -2.0
-float membershipJernih(float error)
-{
-  if (error <= -7.0f || error >= -1.0f)
-    return 0.0f;
-  if (error >= -4.0f && error <= -2.0f)
-    return 1.0f;
-  if (error > -7.0f && error < -4.0f)
-    return (error + 7.0f) / 3.0f;
-  if (error > -2.0f && error < -1.0f)
-    return (-1.0f - error) / 1.0f;
-  return 0.0f;
+float membershipJernih(float error) {
+  if (error <= -7.0f || error >= -1.0f) return 0.0f;
+  if (error >= -4.0f && error <= -2.0f) return 1.0f;
+  if (error > -7.0f && error < -4.0f) return (error + 7.0f) / 3.0f;
+  return (-1.0f - error) / 1.0f;
 }
-
-// 3. SESUAI - Zona setpoint kekeruhan (DIPERSEMPIT)
-// Aktif: -2.5 < error < 2.5
-// Puncak: -0.5 <= error <= 0.5
-float membershipSesuaiKeruh(float error)
-{
-  if (error <= -2.5f || error >= 2.5f)
-    return 0.0f;
-  if (error >= -0.5f && error <= 0.5f)
-    return 1.0f;
-  if (error > -2.5f && error < -0.5f)
-    return (error + 2.5f) / 2.0f;
-  if (error > 0.5f && error < 2.5f)
-    return (2.5f - error) / 2.0f;
-  return 0.0f;
+float membershipSesuaiKeruh(float error) {
+  if (error <= -2.5f || error >= 2.5f) return 0.0f;
+  if (error >= -0.5f && error <= 0.5f) return 1.0f;
+  if (error > -2.5f && error < -0.5f) return (error + 2.5f) / 2.0f;
+  return (2.5f - error) / 2.0f;
 }
-
-// 4. KERUH - Air mulai keruh, pompa perlu ditingkatkan
-// Aktif: 1.0 < error < 10.0
-// Puncak: 4.0 <= error <= 7.0
-float membershipKeruh(float error)
-{
-  if (error <= 1.0f || error >= 10.0f)
-    return 0.0f;
-  if (error >= 4.0f && error <= 7.0f)
-    return 1.0f;
-  if (error > 1.0f && error < 4.0f)
-    return (error - 1.0f) / 3.0f;
-  if (error > 7.0f && error < 10.0f)
-    return (10.0f - error) / 3.0f;
-  return 0.0f;
+float membershipKeruh(float error) {
+  if (error <= 1.0f || error >= 10.0f) return 0.0f;
+  if (error >= 4.0f && error <= 7.0f) return 1.0f;
+  if (error > 1.0f && error < 4.0f) return (error - 1.0f) / 3.0f;
+  return (10.0f - error) / 3.0f;
 }
-
-// 5. SANGAT KERUH - Air sangat keruh, pompa maksimum
-// Aktif: error >= 8.0
-// Puncak: error >= 12.0
-float membershipSangatKeruh(float error)
-{
-  if (error <= 8.0f)
-    return 0.0f;
-  if (error >= 12.0f)
-    return 1.0f;
+float membershipSangatKeruh(float error) {
+  if (error <= 8.0f) return 0.0f;
+  if (error >= 12.0f) return 1.0f;
   return (error - 8.0f) / 4.0f;
 }
 
-// DEFUZZIFIKASI - Output yang lebih responsif
-float hitungFuzzyKeruh(float errorKeruh)
-{
+float hitungFuzzyKeruh(float errorKeruh) {
   float mu_sangatJernih = membershipSangatJernih(errorKeruh);
   float mu_jernih = membershipJernih(errorKeruh);
   float mu_sesuai = membershipSesuaiKeruh(errorKeruh);
   float mu_keruh = membershipKeruh(errorKeruh);
   float mu_sangatKeruh = membershipSangatKeruh(errorKeruh);
 
-  // Output PWM% yang lebih agresif:
-  float numerator = (mu_sangatJernih * 0.0f) +
-                    (mu_jernih * 20.0f) +
-                    (mu_sesuai * 45.0f) +
-                    (mu_keruh * 70.0f) +      // PENINGKATAN dari 60% ke 70%
-                    (mu_sangatKeruh * 95.0f); // PENINGKATAN dari 85% ke 95%
-
+  float numerator = (mu_sangatJernih * 0.0f) + (mu_jernih * 20.0f) + 
+                    (mu_sesuai * 50.0f) + (mu_keruh * 90.0f) + (mu_sangatKeruh * 100.0f);
   float denominator = mu_sangatJernih + mu_jernih + mu_sesuai + mu_keruh + mu_sangatKeruh;
 
-  if (denominator < 0.01f)
-  {
-    return 45.0f;
-  }
-
+  if (denominator < 0.01f) return 50.0f; 
   return numerator / denominator;
 }
 
 // =========================================================================
-//          IMPROVED PID CONTROL - TEMPERATURE
+//                      KONTROL PID (ADVANCED)
 // =========================================================================
-double hitungPIDSuhu(float errorSuhu)
-{
-  unsigned long now = millis();
-  double elapsedTime = (double)(now - lastTimeSuhu);
-  if (elapsedTime < 1)
-    elapsedTime = 1;
-  double dt = elapsedTime / 1000.0;
 
-  // PROPORTIONAL
+double hitungPIDSuhu(float errorSuhu) {
+  unsigned long now = millis();
+  double dt = (double)(now - lastTimeSuhu) / 1000.0;
+  if (dt < 0.001) dt = 0.001; 
+
   double P = Kp_suhu * errorSuhu;
 
-  // INTEGRAL dengan anti-windup yang lebih baik
   integralSumSuhu += errorSuhu * dt;
-
-  // Anti-windup dengan batas lebih ketat
-  if (integralSumSuhu > 20.0)
-    integralSumSuhu = 20.0;
-  if (integralSumSuhu < -20.0)
-    integralSumSuhu = -20.0;
-
-  // Reset 50% saat crossing setpoint
-  if ((errorSuhu > 0 && lastErrorSuhu < 0) || (errorSuhu < 0 && lastErrorSuhu > 0))
-  {
+  if (integralSumSuhu > 20.0) integralSumSuhu = 20.0;
+  if (integralSumSuhu < -20.0) integralSumSuhu = -20.0;
+  
+  if ((errorSuhu > 0 && lastErrorSuhu < 0) || (errorSuhu < 0 && lastErrorSuhu > 0)) {
     integralSumSuhu *= 0.5;
   }
-
   double I = Ki_suhu * integralSumSuhu;
 
-  // DERIVATIVE dengan low-pass filter
-  static double lastDerivative = 0.0;
-  double derivative = (errorSuhu - lastErrorSuhu) / dt;
-  derivative = 0.3 * derivative + 0.7 * lastDerivative;
-  lastDerivative = derivative;
-
+  double rawDerivative = (errorSuhu - lastErrorSuhu) / dt;
+  static double lastDerivSuhu = 0.0;
+  double derivative = 0.3 * rawDerivative + 0.7 * lastDerivSuhu; 
+  lastDerivSuhu = derivative;
   double D = Kd_suhu * derivative;
-
-  double output = P + I + D;
 
   lastErrorSuhu = errorSuhu;
   lastTimeSuhu = now;
 
-  return constrain(output, 0.0, 100.0);
+  return constrain(P + I + D, 0.0, 100.0);
 }
 
-void resetPIDSuhu()
-{
-  integralSumSuhu = 0.0;
-  lastErrorSuhu = 0.0;
-  lastTimeSuhu = millis();
-}
-
-// =========================================================================
-//          IMPROVED PID CONTROL - TURBIDITY
-// =========================================================================
-double hitungPIDKeruh(float errorKeruh)
-{
+double hitungPIDKeruh(float errorKeruh) {
   unsigned long now = millis();
-  double elapsedTime = (double)(now - lastTimeKeruh);
-  if (elapsedTime < 1)
-    elapsedTime = 1;
-  double dt = elapsedTime / 1000.0;
+  double dt = (double)(now - lastTimeKeruh) / 1000.0;
+  if (dt < 0.001) dt = 0.001;
 
-  double P = Kp_keruh * errorKeruh;
-
-  integralSumKeruh += errorKeruh * dt;
-  if (integralSumKeruh > 30.0)
-    integralSumKeruh = 30.0;
-  if (integralSumKeruh < -30.0)
-    integralSumKeruh = -30.0;
-
-  if ((errorKeruh > 0 && lastErrorKeruh < 0) || (errorKeruh < 0 && lastErrorKeruh > 0))
-  {
-    integralSumKeruh *= 0.5;
+  double dynamicKp;
+  double dynamicKd;
+  
+  if (abs(errorKeruh) > 2.0) {
+    dynamicKp = 35.0; // Mode Turbo
+    dynamicKd = 0.0;  
+    integralSumKeruh = 0; 
+  } else {
+    dynamicKp = Kp_keruh; // Mode Smooth
+    dynamicKd = Kd_keruh; 
   }
 
+  double P = dynamicKp * errorKeruh;
+
+  integralSumKeruh += errorKeruh * dt;
+  integralSumKeruh = constrain(integralSumKeruh, -20.0, 20.0); 
   double I = Ki_keruh * integralSumKeruh;
 
-  static double lastDerivativeKeruh = 0.0;
-  double derivative = (errorKeruh - lastErrorKeruh) / dt;
-  derivative = 0.3 * derivative + 0.7 * lastDerivativeKeruh;
-  lastDerivativeKeruh = derivative;
+  double rawDerivative = (errorKeruh - lastErrorKeruh) / dt;
+  static double lastDerivKeruh = 0.0;
+  double derivative = 0.3 * rawDerivative + 0.7 * lastDerivKeruh; 
+  lastDerivKeruh = derivative;
+  double D = dynamicKd * derivative;
 
-  double D = Kd_keruh * derivative;
+  double feedForward = 50.0; 
 
-  double output = P + I + D;
+  double output = P + I + D + feedForward;
+
+  float aktualTurbidity = errorKeruh + turbiditySetpoint; 
+  float targetMatiTotal = 9.0; 
+
+  if (aktualTurbidity <= targetMatiTotal) {
+    output = 0.0;          
+    integralSumKeruh = 0;  
+  }
 
   lastErrorKeruh = errorKeruh;
   lastTimeKeruh = now;
@@ -528,459 +334,283 @@ double hitungPIDKeruh(float errorKeruh)
   return constrain(output, 0.0, 100.0);
 }
 
-void resetPIDKeruh()
-{
-  integralSumKeruh = 0.0;
-  lastErrorKeruh = 0.0;
-  lastTimeKeruh = millis();
+void resetPID() {
+  integralSumSuhu = 0; lastErrorSuhu = 0;
+  integralSumKeruh = 0; lastErrorKeruh = 0;
+  lastTimeSuhu = millis(); lastTimeKeruh = millis();
 }
 
 // =========================================================================
-//                WIFI & MQTT
+//                  KONEKSI WIFI & MQTT
 // =========================================================================
-void setup_wifi()
-{
+
+void setup_wifi() {
   delay(10);
-  Serial.println("\n[WiFi] Starting multi-network connection...");
+  Serial.println("\n[WiFi] Mencoba koneksi...");
   WiFi.mode(WIFI_STA);
   WiFi.disconnect();
-  delay(100);
 
-  // Coba connect ke setiap WiFi yang tersedia
-  for (int network = 0; network < NUM_WIFI_NETWORKS; network++)
-  {
-    Serial.printf("\n[WiFi] Trying network %d: %s\n", network + 1, wifiNetworks[network].ssid);
+  for (int network = 0; network < NUM_WIFI_NETWORKS; network++) {
+    Serial.printf("\n[WiFi] Mencoba network: %s\n", wifiNetworks[network].ssid);
     WiFi.begin(wifiNetworks[network].ssid, wifiNetworks[network].password);
 
     int attempts = 0;
-    while (WiFi.status() != WL_CONNECTED && attempts < 20) // 20 attempts = 10 detik
-    {
-      delay(500);
-      Serial.print(".");
-      attempts++;
+    while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+      delay(500); Serial.print("."); attempts++;
     }
 
-    if (WiFi.status() == WL_CONNECTED)
-    {
-      Serial.println("\n[WiFi] ✅ Connected!");
-      Serial.printf("[WiFi] Network: %s\n", wifiNetworks[network].ssid);
-      Serial.printf("[WiFi] IP Address: %s\n", WiFi.localIP().toString().c_str());
-      Serial.printf("[WiFi] Signal Strength: %d dBm\n", WiFi.RSSI());
-      return; // Berhasil connect, keluar dari fungsi
-    }
-    else
-    {
-      Serial.printf("\n[WiFi] ❌ Failed to connect to %s\n", wifiNetworks[network].ssid);
-      WiFi.disconnect();
-      delay(1000);
+    if (WiFi.status() == WL_CONNECTED) {
+      Serial.printf("\n[WiFi] Terhubung! IP: %s\n", WiFi.localIP().toString().c_str());
+      return;
     }
   }
-
-  // Jika semua WiFi gagal
-  Serial.println("\n[WiFi] ⚠️ ALL NETWORKS FAILED!");
-  Serial.println("[WiFi] Restarting ESP32 in 5 seconds...");
-  delay(5000);
+  Serial.println("\n[WiFi] Gagal semua network. Restart ESP...");
   ESP.restart();
 }
 
-void callback(char *topic, byte *payload, unsigned int length)
-{
-  Serial.println("\n========================================");
-  Serial.println("[MQTT] ✅ Message received!");
-  Serial.print("[MQTT] Topic: ");
-  Serial.println(topic);
-  Serial.print("[MQTT] Payload length: ");
-  Serial.println(length);
-  Serial.print("[MQTT] Payload: ");
+void callback(char *topic, byte *payload, unsigned int length) {
+  // Gunakan DynamicJsonDocument agar aman dari Stack Overflow
+  DynamicJsonDocument doc(1024);
+  DeserializationError error = deserializeJson(doc, payload, length);
 
-  // Print raw payload
-  for (unsigned int i = 0; i < length; i++)
-  {
-    Serial.print((char)payload[i]);
-  }
-  Serial.println();
-
-  if (strcmp(topic, MQTT_TOPIC_MODE) != 0)
-  {
-    Serial.println("[MQTT] ❌ Wrong topic, ignoring...");
-    Serial.println("========================================\n");
+  if (error) {
+    Serial.printf("[MQTT ERROR] Gagal parse JSON: %s\n", error.c_str());
     return;
   }
 
-  StaticJsonDocument<512> doc; // Tingkatkan dari 400 ke 512
-  char payloadStr[length + 1];
-  memcpy(payloadStr, payload, length);
-  payloadStr[length] = '\0';
-
-  DeserializationError error = deserializeJson(doc, payloadStr);
-
-  if (error)
-  {
-    Serial.print("[MQTT] ❌ JSON Parse Error: ");
-    Serial.println(error.c_str());
-    Serial.println("========================================\n");
-    return;
-  }
-
-  Serial.println("[MQTT] ✅ JSON parsed successfully!");
-
-  // Control Mode
-  if (doc.containsKey("kontrol_aktif"))
-  {
+  // --- 1. UPDATE MODE KONTROL ---
+  if (doc.containsKey("kontrol_aktif")) {
     String mode = doc["kontrol_aktif"].as<String>();
-    if (mode == "Fuzzy")
-    {
-      kontrolAktif = FUZZY;
-      resetPIDSuhu();
-      resetPIDKeruh();
-      Serial.println("[MODE] Changed to: FUZZY");
-    }
-    else if (mode == "PID")
-    {
-      kontrolAktif = PID;
-      Serial.println("[MODE] Changed to: PID");
-    }
+    if (mode == "Fuzzy") kontrolAktif = FUZZY;
+    else kontrolAktif = PID;
+    resetPID(); 
+    Serial.println("\n========================================");
+    Serial.printf("[MODE] Ganti Mode Kontrol ke: %s\n", mode.c_str());
+    Serial.println("========================================");
   }
 
-  // Setpoints
-  if (doc.containsKey("suhu_setpoint"))
-  {
+  // --- 2. UPDATE SETPOINT ---
+  if (doc.containsKey("suhu_setpoint")) {
     suhuSetpoint = doc["suhu_setpoint"];
-    Serial.print("[SETPOINT] Suhu updated: ");
-    Serial.println(suhuSetpoint);
+    Serial.printf("[SETPOINT] Target Suhu Baru: %.2f C\n", suhuSetpoint);
   }
-  if (doc.containsKey("keruh_setpoint"))
-  {
+  if (doc.containsKey("keruh_setpoint")) {
     turbiditySetpoint = doc["keruh_setpoint"];
-    Serial.print("[SETPOINT] Kekeruhan updated: ");
-    Serial.println(turbiditySetpoint);
+    Serial.printf("[SETPOINT] Target Kekeruhan Baru: %.2f %%\n", turbiditySetpoint);
   }
 
-  // PID Parameters
-  if (doc.containsKey("kp_suhu"))
-  {
-    Kp_suhu = doc["kp_suhu"];
-    Serial.print("[PID] Kp_suhu updated: ");
-    Serial.println(Kp_suhu);
-  }
-  if (doc.containsKey("ki_suhu"))
-  {
-    Ki_suhu = doc["ki_suhu"];
-    Serial.print("[PID] Ki_suhu updated: ");
-    Serial.println(Ki_suhu);
-  }
-  if (doc.containsKey("kd_suhu"))
-  {
-    Kd_suhu = doc["kd_suhu"];
-    Serial.print("[PID] Kd_suhu updated: ");
-    Serial.println(Kd_suhu);
-  }
-  if (doc.containsKey("kp_keruh"))
-  {
-    Kp_keruh = doc["kp_keruh"];
-    Serial.print("[PID] Kp_keruh updated: ");
-    Serial.println(Kp_keruh);
-  }
-  if (doc.containsKey("ki_keruh"))
-  {
-    Ki_keruh = doc["ki_keruh"];
-    Serial.print("[PID] Ki_keruh updated: ");
-    Serial.println(Ki_keruh);
-  }
-  if (doc.containsKey("kd_keruh"))
-  {
-    Kd_keruh = doc["kd_keruh"];
-    Serial.print("[PID] Kd_keruh updated: ");
-    Serial.println(Kd_keruh);
+  // --- 3. UPDATE TUNING PID ---
+  bool tuningUpdated = false;
+  
+  // PID Suhu
+  if (doc.containsKey("kp_suhu")) { Kp_suhu = doc["kp_suhu"]; tuningUpdated = true; }
+  if (doc.containsKey("ki_suhu")) { Ki_suhu = doc["ki_suhu"]; tuningUpdated = true; }
+  if (doc.containsKey("kd_suhu")) { Kd_suhu = doc["kd_suhu"]; tuningUpdated = true; }
+
+  // PID Keruh
+  if (doc.containsKey("kp_keruh")) { Kp_keruh = doc["kp_keruh"]; tuningUpdated = true; }
+  if (doc.containsKey("ki_keruh")) { Ki_keruh = doc["ki_keruh"]; tuningUpdated = true; }
+  if (doc.containsKey("kd_keruh")) { Kd_keruh = doc["kd_keruh"]; tuningUpdated = true; }
+
+  if (tuningUpdated) {
+    Serial.println("\n----------- PID PARAMETER BERHASIL DI-UPDATE -----------");
+    // PERBAIKAN: Menghapus %s dan timeStr yang bikin crash
+    Serial.printf("[PID SUHU ] Kp: %.2f | Ki: %.2f | Kd: %.2f\n", Kp_suhu, Ki_suhu, Kd_suhu);
+    Serial.printf("[PID KERUH] Kp: %.2f | Ki: %.2f | Kd: %.2f\n", Kp_keruh, Ki_keruh, Kd_keruh);
+    Serial.println("--------------------------------------------------------");
   }
 
-  // ========== KALIBRASI ADC - PERBAIKAN DI SINI ==========
-  bool adcUpdated = false;
-
-  if (doc.containsKey("adc_jernih"))
-  {
-    int newValue = doc["adc_jernih"];
-    Serial.print("[CALIBRATION] ADC Jernih - Old: ");
-    Serial.print(NILAI_ADC_JERNIH);
-    Serial.print(" → New: ");
-    Serial.println(newValue);
-
-    NILAI_ADC_JERNIH = newValue;
-    adcUpdated = true;
+  // --- 4. UPDATE KALIBRASI ---
+  bool calibUpdated = false;
+  if (doc.containsKey("adc_jernih")) { 
+    NILAI_ADC_JERNIH = doc["adc_jernih"]; 
+    calibUpdated = true; 
+  }
+  if (doc.containsKey("adc_keruh")) { 
+    NILAI_ADC_KERUH = doc["adc_keruh"]; 
+    calibUpdated = true; 
   }
 
-  if (doc.containsKey("adc_keruh"))
-  {
-    int newValue = doc["adc_keruh"];
-    Serial.print("[CALIBRATION] ADC Keruh - Old: ");
-    Serial.print(NILAI_ADC_KERUH);
-    Serial.print(" → New: ");
-    Serial.println(newValue);
-
-    NILAI_ADC_KERUH = newValue;
-    adcUpdated = true;
+  if (calibUpdated) {
+    Serial.println("\n!!!!!!!!!! CALIBRATION UPDATED !!!!!!!!!!");
+    // PERBAIKAN: Menghapus %s dan timeStr
+    Serial.printf("[CALIB] ADC Jernih (0%%)   : %d\n", NILAI_ADC_JERNIH);
+    Serial.printf("[CALIB] ADC Keruh (100%%)  : %d\n", NILAI_ADC_KERUH);
+    Serial.println("!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!");
   }
-
-  if (adcUpdated)
-  {
-    Serial.println("[CALIBRATION] ✅ ADC values updated successfully!");
-    Serial.print("[CALIBRATION] Current values - Jernih: ");
-    Serial.print(NILAI_ADC_JERNIH);
-    Serial.print(", Keruh: ");
-    Serial.println(NILAI_ADC_KERUH);
-  }
-  // =======================================================
-
-  Serial.println("[MQTT] ✅ All updates completed!");
-  Serial.println("========================================\n");
 }
 
-bool reconnect_mqtt()
-{
-  int attempts = 0;
-  while (!mqttClient.connected() && attempts < 3)
-  {
-    Serial.print("[MQTT] Connecting... ");
-    if (mqttClient.connect(MQTT_CLIENT_ID))
-    {
-      Serial.println("OK!");
-      mqttClient.subscribe(MQTT_TOPIC_MODE, 1);
-      return true;
-    }
-    Serial.println("FAIL");
-    attempts++;
-    delay(2000);
+bool reconnect_mqtt() {
+  if (mqttClient.connect(MQTT_CLIENT_ID)) {
+    mqttClient.subscribe(MQTT_TOPIC_MODE, 1); 
+    return true;
   }
   return false;
 }
 
 // =========================================================================
-//                SENSOR FUNCTIONS
+//                  PEMBACAAN SENSOR
 // =========================================================================
-float bacaSuhuDS18B20()
-{
+
+float bacaSuhuDS18B20() {
   sensors.requestTemperatures();
   float tempC = sensors.getTempCByIndex(0);
 
-  // 1. Safety Check: Jika sensor error/copot
-  if (tempC == -127.00f || isnan(tempC))
-  {
-    // Jika belum pernah ada data valid, kembalikan 0 atau nilai aman
-    if (suhuTerfilter == 0.0)
-      return 28.0;
-    return suhuTerfilter; // Pakai nilai terakhir yang valid
+  if (tempC == -127.00f || isnan(tempC)) {
+    return (suhuTerfilter == 0.0) ? 28.0 : suhuTerfilter;
   }
 
-  // 2. Inisialisasi Awal (Anti-Startup Bug)
-  // Jika ini pembacaan pertama (suhuTerfilter masih 0), langsung pakai nilai sensor
-  if (suhuTerfilter == 0.0)
-  {
-    suhuTerfilter = tempC;
-  }
-  else
-  {
-    // 3. Rumus EMA Filter
-    // NilaiBaru = (Faktor * DataMentah) + ((1 - Faktor) * DataLama)
-    suhuTerfilter = (ALPHA * tempC) + ((1.0 - ALPHA) * suhuTerfilter);
-  }
-
-  // Update variabel global suhuTerakhir untuk keperluan lain jika ada
-  suhuTerakhir = suhuTerfilter;
-
+  if (suhuTerfilter == 0.0) suhuTerfilter = tempC;
+  else suhuTerfilter = (ALPHA * tempC) + ((1.0 - ALPHA) * suhuTerfilter);
+  
+  suhuTerakhir = suhuTerfilter; 
   return suhuTerfilter;
 }
 
-int bacaTurbidity()
-{
+int bacaTurbidity() {
   long totalADC = 0;
-  int jumlahSampel = 20; // Ambil 20 sampel data
-
-  for (int i = 0; i < jumlahSampel; i++)
-  {
+  for (int i = 0; i < 20; i++) {
     int16_t val = ads.readADC_SingleEnded(0);
-
-    // Safety check per sampel
-    if (val < 0)
-      val = 0;
-    if (val > 32767)
-      val = 32767;
-
+    if (val < 0) val = 0;
+    if (val > 32767) val = 32767;
     totalADC += val;
-    delay(2); // Jeda dikit biar ADC nafas (total delay cuma 40ms)
+    delay(2);
   }
-
-  // Hitung rata-rata
-  int rataRata = totalADC / jumlahSampel;
-
-  // Simpan ke variabel global
-  turbidityTerakhir = rataRata;
-
-  return rataRata;
+  int avgADC = totalADC / 20;
+  turbidityTerakhir = avgADC; // Update nilai ADC global
+  return avgADC;
 }
 
-float konversiTurbidityKePersen(int adcValue)
-{
-  // Logika: Nilai ADC Keruh -> 100%, Nilai ADC Jernih -> 0%
+float konversiTurbidityKePersen(int adcValue) {
   float persen = mapFloat((float)adcValue, (float)NILAI_ADC_KERUH, (float)NILAI_ADC_JERNIH, 100.0, 0.0);
-
   return constrain(persen, 0.0f, 100.0f);
 }
 
 // =========================================================================
-//                          MQTT PUBLISH
+//                  SETUP & LOOP UTAMA
 // =========================================================================
-void kirimDataMQTT(float suhu, float turbPersen, double pwmSuhu, double pwmKeruh,
-                   float errSuhu, float errKeruh, int turbADC)
-{
-  StaticJsonDocument<512> doc;
 
-  // Basic Data
-  doc["timestamp_ms"] = millis();
-  doc["suhu"] = round(suhu * 100) / 100.0;
-  doc["turbidity_persen"] = round(turbPersen * 100) / 100.0;
-  doc["turbidity_adc"] = turbADC;
-  doc["kontrol_aktif"] = (kontrolAktif == FUZZY) ? "Fuzzy" : "PID";
-  doc["pwm_heater"] = round(pwmSuhu * 100) / 100.0;
-  doc["pwm_pompa"] = round(pwmKeruh * 100) / 100.0;
-
-  // Research Data
-  doc["error_suhu"] = round(errSuhu * 1000) / 1000.0;
-  doc["error_keruh"] = round(errKeruh * 1000) / 1000.0;
-  doc["setpoint_suhu"] = suhuSetpoint;
-  doc["setpoint_keruh"] = turbiditySetpoint;
-
-  char buffer[512];
-  serializeJson(doc, buffer);
-  mqttClient.publish(MQTT_TOPIC_DATA, buffer, false);
-}
-
-// =========================================================================
-//                            SETUP
-// =========================================================================
-void setup()
-{
+void setup() {
   Serial.begin(115200);
-  Serial.println("\n=== ESP32 Research Control System with L298N ===");
-
+  
   Wire.begin();
-  if (!ads.begin())
-  {
-    Serial.println("[ERROR] ADS1115 not found!");
-    while (1)
-      delay(1000);
+  if (!ads.begin()) {
+    Serial.println("[ERR] ADS1115 Tidak Terdeteksi!");
+    while (1);
   }
-  Serial.println("[OK] ADS1115 initialized");
-
-  // Initialize L298N Motor Driver
+  
   setupL298N();
-
-  // Initialize DS18B20
   sensors.begin();
-  Serial.println("[OK] DS18B20 sensor initialized");
-
-  lastTimeSuhu = millis();
-  lastTimeKeruh = millis();
-  resetPIDSuhu();
-  resetPIDKeruh();
-
+  resetPID();
   setup_wifi();
-  mqttClient.setBufferSize(512); //size data 
+  
+  mqttClient.setBufferSize(512); 
   mqttClient.setServer(MQTT_BROKER, MQTT_PORT);
   mqttClient.setCallback(callback);
-  mqttClient.setKeepAlive(60);
-
-  // Paksa connect MQTT Sekarang
-  Serial.println("[Setup] Connecting to MQTT...");
-  if (reconnect_mqtt())
-  {
-    Serial.println("[Setup] MQTT Connected & Subscribed!");
-    // Beri waktu sebentar untuk menerima pesan retain
-    for (int i = 0; i < 10; i++)
-    {
-      mqttClient.loop();
-      delay(50);
-    }
-  }
-
-  Serial.println("=== System Ready for Research ===\n");
+  
+  Serial.println("\n=== SISTEM SIAP: RISET KENDALI HYBRID ===");
 }
 
-  // =========================================================================
-  //                       FUNGSI WiFi MONITORING 
-  // =========================================================================
-  void checkWiFiConnection()
-  {
-    if (WiFi.status() != WL_CONNECTED)
-    {
-      Serial.println("\n[WiFi] ⚠️ Connection lost! Attempting to reconnect...");
-      WiFi.disconnect();
-      WiFi.reconnect();
+void loop() {
+  unsigned long now = millis();
+
+  if (now - lastWiFiCheck >= wifiCheckInterval) {
+    lastWiFiCheck = now;
+    if (WiFi.status() != WL_CONNECTED) {
+      WiFi.disconnect(); WiFi.reconnect();
     }
   }
-  // =========================================================================
-  //                              MAIN LOOP
-  // =========================================================================
-  void loop()
-  {
-    unsigned long now = millis();
 
-    // ========== WiFi Connection Monitor (Check every 5 seconds) ==========
-    if (now - lastWiFiCheck >= wifiCheckInterval)
-    {
-      lastWiFiCheck = now;
-      checkWiFiConnection();
+  if (!mqttClient.connected()) reconnect_mqtt();
+  mqttClient.loop();
+
+  if (now - waktuTerakhirKirim >= intervalKirim) {
+    waktuTerakhirKirim = now;
+
+    // 1. Baca Sensor
+    float suhuAktual = bacaSuhuDS18B20();
+    int turbidityADC = bacaTurbidity();
+    float turbidityPersen = konversiTurbidityKePersen(turbidityADC);
+
+    // 2. Hitung Error
+    float errorSuhu = suhuSetpoint - suhuAktual;
+    float errorKeruh = turbidityPersen - turbiditySetpoint;
+
+    // 3. Hitung Output Kontrol
+    double outSuhu, outKeruh;
+    if (kontrolAktif == FUZZY) {
+      outSuhu = hitungFuzzySuhu(errorSuhu);
+      outKeruh = hitungFuzzyKeruh(errorKeruh);
+    } else {
+      outSuhu = hitungPIDSuhu(errorSuhu);
+      outKeruh = hitungPIDKeruh(errorKeruh);
     }
 
-    // ========== MQTT Connection ==========
-    if (!mqttClient.connected())
-    {
-      reconnect_mqtt();
+    // 4. Eksekusi ke Motor
+    int pwmSuhu = constrain((int)(outSuhu * 2.55), 0, 255);
+    int pwmKeruh = constrain((int)(outKeruh * 2.55), 0, 255);
+
+    setHeaterSpeed(pwmSuhu);
+    setPumpSpeed(pwmKeruh);
+
+    // 5. Kirim Telemetri ke Dashboard (MQTT)
+    if (mqttClient.connected()) {
+      StaticJsonDocument<512> doc;
+
+      // --- Basic Data (Nama Key sesuai kode lama) ---
+      doc["timestamp_ms"] = now;  
+      doc["suhu"] = round(suhuAktual * 100) / 100.0;
+      doc["turbidity_persen"] = round(turbidityPersen * 100) / 100.0;
+      doc["turbidity_adc"] = turbidityADC;
+      doc["kontrol_aktif"] = (kontrolAktif == FUZZY) ? "Fuzzy" : "PID"; // Kembali ke "kontrol_aktif"
+      
+      // Kirim nilai 0-100% (bukan PWM 0-255) agar enak dibaca di grafik
+      doc["pwm_heater"] = round(outSuhu * 100) / 100.0; 
+      doc["pwm_pompa"] = round(outKeruh * 100) / 100.0;
+
+      // --- Research Data ---
+      doc["error_suhu"] = round(errorSuhu * 1000) / 1000.0;
+      doc["error_keruh"] = round(errorKeruh * 1000) / 1000.0;
+      doc["setpoint_suhu"] = suhuSetpoint;
+      doc["setpoint_keruh"] = turbiditySetpoint;
+
+      // --- Data Tambahan (Optional - Fitur Baru) ---
+      // Ini tidak akan merusak dashboard lama, cuma nambah info jika ingin dipakai
+      doc["feedforward_active"] = (abs(errorKeruh) < 3.0 && turbidityPersen > 9.0);
+      
+      char buffer[512];
+      serializeJson(doc, buffer);
+      mqttClient.publish(MQTT_TOPIC_DATA, buffer, false); 
     }
-    mqttClient.loop();
 
-    // Data Collection Loop
-    if (now - waktuTerakhirKirim >= intervalKirim)
-    {
-      waktuTerakhirKirim = now;
+    // 6. Debug Lengkap di Serial Monitor 
+    unsigned long s = now / 1000;      // Total detik
+    unsigned long m = s / 60;          // Total menit
+    unsigned long h = m / 60;          // Total jam
 
-      // Read Sensors
-      float suhuAktual = bacaSuhuDS18B20();
-      int turbidityADC = bacaTurbidity();
-      float turbidityPersen = konversiTurbidityKePersen(turbidityADC);
+    Serial.println("\n-------------------------------------------------------------");
+    Serial.printf("[%02lu:%02lu:%02lu] [SYSTEM] Mode: %s | WiFi: %s (%d dBm)\n", 
+      (h % 24), (m % 60), (s % 60), 
+      (kontrolAktif == FUZZY) ? "FUZZY" : "PID (ADAPTIVE)", 
+      WiFi.status() == WL_CONNECTED ? "ONLINE" : "OFFLINE", 
+      WiFi.RSSI()
+    );
+    
+    Serial.printf("[TURBIDITY] Current: %.2f%% (Set: %.1f%%) | Error: %.2f\n", 
+      turbidityPersen, turbiditySetpoint, errorKeruh
+    );
+    Serial.printf("            ADC Val: %d | Calib: [Jernih:%d - Keruh:%d]\n", 
+      turbidityADC, NILAI_ADC_JERNIH, NILAI_ADC_KERUH
+    );
+    Serial.printf("            Output : %.1f%% (PWM: %d) | Feedforward: %s\n", 
+      outKeruh, pwmKeruh, 
+      (abs(errorKeruh) < 3.0 && turbidityPersen > 9.0) ? "ON" : "OFF"
+    );
 
-      // Calculate Errors
-      float errorSuhu = suhuSetpoint - suhuAktual;
-      float errorKeruh = turbidityPersen - turbiditySetpoint;
-
-      // Control Outputs
-      double dayaOutputSuhu = (kontrolAktif == FUZZY) ? hitungFuzzySuhu(errorSuhu) : hitungPIDSuhu(errorSuhu);
-      double dayaOutputKeruh = (kontrolAktif == FUZZY) ? hitungFuzzyKeruh(errorKeruh) : hitungPIDKeruh(errorKeruh);
-
-      int pwmSuhu = constrain((int)(dayaOutputSuhu * 2.55), 0, 255);
-      int pwmKeruh = constrain((int)(dayaOutputKeruh * 2.55), 0, 255);
-
-      // Control L298N Motors
-      setHeaterSpeed(pwmSuhu);
-      setPumpSpeed(pwmKeruh);
-
-      // Send Data
-      if (mqttClient.connected())
-      {
-        kirimDataMQTT(suhuAktual, turbidityPersen, dayaOutputSuhu, dayaOutputKeruh,
-                      errorSuhu, errorKeruh, turbidityADC);
-      }
-
-      // Debug Print
-      Serial.printf("[%lu] [%s] T:%.2f/%.1f [%.1f/%.1f/%.1f] E:%.2f PWM:%-3d | K:%.1f/%.1f [%.1f/%.1f/%.1f] E:%.1f PWM:%-3d | ADC:%d (J:%d K:%d) | WiFi:%s\n",
-                    millis() / 1000,
-                    (kontrolAktif == FUZZY) ? "FUZZY" : "PID  ", // 1. Tampilkan Mode
-                    suhuAktual, suhuSetpoint,
-                    Kp_suhu, Ki_suhu, Kd_suhu, // 2. Tampilkan PID Suhu
-                    errorSuhu, pwmSuhu,
-                    turbidityPersen, turbiditySetpoint,
-                    Kp_keruh, Ki_keruh, Kd_keruh, // 3. Tampilkan PID Keruh
-                    errorKeruh, pwmKeruh,
-                    turbidityADC, NILAI_ADC_JERNIH, NILAI_ADC_KERUH, // 4. DATA ADC DIKEMBALIKAN
-                    WiFi.status() == WL_CONNECTED ? "OK" : "LOST");
-    }
+    Serial.printf("[TEMP]      Current: %.2f°C (Set: %.1f°C) | Error: %.2f\n", 
+      suhuAktual, suhuSetpoint, errorSuhu
+    );
+    Serial.printf("            Output : %.1f%% (PWM: %d)\n", outSuhu, pwmSuhu);
+    Serial.println("-------------------------------------------------------------");
   }
+}
