@@ -80,7 +80,7 @@ const long wifiCheckInterval = 5000;
 // Setting PWM
 const int PWM_FREQ = 1000;
 const int PWM_RESOLUTION = 8;
-const int PWM_MIN_FISIK = 180;   
+const int PWM_MIN_FISIK = 235;   
 const int PWM_START_LOGIKA = 5;
 
 // Objek Sensor & Komunikasi
@@ -93,6 +93,7 @@ Adafruit_ADS1115 ads;
 // Variabel Filter Sensor & Last Values
 float suhuTerfilter = 0.0;
 const float ALPHA = 0.2; 
+double outputKeruhTerfilter = 0.0;
 
 // variabel suhuTerakhir & turbidityTerakhir
 float suhuTerakhir = 25.0f;
@@ -321,12 +322,21 @@ double hitungPIDKeruh(float errorKeruh) {
   double output = P + I + D + feedForward;
 
   float aktualTurbidity = errorKeruh + turbiditySetpoint; 
+  if (aktualTurbidity >= 11.0) {
+     if (output < 50.0) {
+        output = 50.0; // TAHAN DI SINI! JANGAN TURUN!
+     }
+  }
   float targetMatiTotal = 9.0; 
 
   if (aktualTurbidity <= targetMatiTotal) {
     output = 0.0;          
     integralSumKeruh = 0;  
   }
+
+  float alpha = 0.5; 
+  
+  outputKeruhTerfilter = (alpha * output) + ((1.0 - alpha) * outputKeruhTerfilter);
 
   lastErrorKeruh = errorKeruh;
   lastTimeKeruh = now;
@@ -338,6 +348,8 @@ void resetPID() {
   integralSumSuhu = 0; lastErrorSuhu = 0;
   integralSumKeruh = 0; lastErrorKeruh = 0;
   lastTimeSuhu = millis(); lastTimeKeruh = millis();
+  outputKeruhTerfilter = 0.0;
+  suhuTerfilter = 0.0;
 }
 
 // =========================================================================
@@ -468,17 +480,35 @@ float bacaSuhuDS18B20() {
 }
 
 int bacaTurbidity() {
-  long totalADC = 0;
+  int buffer[20]; // Kita ambil 20 sampel
+  
+  // 1. Ambil sampel
   for (int i = 0; i < 20; i++) {
     int16_t val = ads.readADC_SingleEnded(0);
     if (val < 0) val = 0;
     if (val > 32767) val = 32767;
-    totalADC += val;
+    buffer[i] = val;
     delay(2);
   }
-  int avgADC = totalADC / 20;
-  turbidityTerakhir = avgADC; // Update nilai ADC global
-  return avgADC;
+
+  // 2. Urutkan dari Kecil ke Besar (Sorting)
+  for (int i = 0; i < 19; i++) {
+    for (int j = i + 1; j < 20; j++) {
+      if (buffer[i] > buffer[j]) {
+        int temp = buffer[i];
+        buffer[i] = buffer[j];
+        buffer[j] = temp;
+      }
+    }
+  }
+
+  // 3. Ambil Nilai Tengah (Median)
+  // Ini akan membuang nilai gelembung yang ekstrim tinggi
+  int medianADC = buffer[10]; 
+
+  // Update nilai global
+  turbidityTerakhir = medianADC; 
+  return medianADC;
 }
 
 float konversiTurbidityKePersen(int adcValue) {
@@ -539,11 +569,24 @@ void loop() {
     // 3. Hitung Output Kontrol
     double outSuhu, outKeruh;
     if (kontrolAktif == FUZZY) {
-      outSuhu = hitungFuzzySuhu(errorSuhu);
-      outKeruh = hitungFuzzyKeruh(errorKeruh);
+      double rawFuzzy = hitungFuzzySuhu(errorSuhu); 
+      outSuhu = rawFuzzy; 
+
+      double rawFuzzyKeruh = hitungFuzzyKeruh(errorKeruh);
+      if (turbidityPersen >= 11.0) {     
+         if (rawFuzzyKeruh < 50.0) {     
+            rawFuzzyKeruh = 50.0;        
+         }
+      }
+      if (turbidityPersen <= 9.0) {
+          rawFuzzyKeruh = 0.0;
+      }
+      outputKeruhTerfilter = (0.5 * rawFuzzyKeruh) + ((1.0 - 0.5) * outputKeruhTerfilter);
+      outKeruh = outputKeruhTerfilter;
+      
     } else {
       outSuhu = hitungPIDSuhu(errorSuhu);
-      outKeruh = hitungPIDKeruh(errorKeruh);
+      outKeruh = hitungPIDKeruh(errorKeruh); 
     }
 
     // 4. Eksekusi ke Motor
